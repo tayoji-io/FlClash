@@ -82,6 +82,13 @@ Future<List<Group>> _toGroupsTask(ComputeGroupsState state) async {
   );
 }
 
+const _geoDatabasePrefixes = ['geosite:', 'geoip:', 'rule-set:'];
+
+bool _requiresGeoDatabase(String key) {
+  final value = key.toLowerCase();
+  return _geoDatabasePrefixes.any(value.startsWith);
+}
+
 Future<VM2<String, String>> makeRealProfileTask(
   MakeRealProfileState data,
 ) async {
@@ -206,6 +213,9 @@ Future<VM2<String, String>> _makeRealProfileTask(
     rawConfig['dns'] = dns.toJson();
     rawConfig['dns']['nameserver-policy'] = {};
     for (final entry in dns.nameserverPolicy.entries) {
+      if (system.isIOS && _requiresGeoDatabase(entry.key)) {
+        continue;
+      }
       rawConfig['dns']['nameserver-policy'][entry.key] =
           entry.value.splitByMultipleSeparators;
     }

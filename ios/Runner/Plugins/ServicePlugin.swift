@@ -40,6 +40,7 @@ public class ServicePlugin: NSObject, FlutterPlugin {
     private let channel: FlutterMethodChannel
     private var eventPollTask: Task<Void, Never>?
     private var statusObserver: NSObjectProtocol?
+    private var logRequested = false
 
     init(channel: FlutterMethodChannel) {
         self.channel = channel
@@ -155,6 +156,11 @@ public class ServicePlugin: NSObject, FlutterPlugin {
         }
 
         let method = Self.methodName(from: payload)
+        if method == "startLog" {
+            logRequested = true
+        } else if method == "stopLog" {
+            logRequested = false
+        }
         if method == "initClash" {
             SharedStore.initParams = Self.argumentsJson(from: payload)
         }
@@ -272,10 +278,25 @@ public class ServicePlugin: NSObject, FlutterPlugin {
             await MainActor.run {
                 if connected {
                     self.startEventPolling()
+                    self.resumeTunnelLogging()
                 } else {
                     self.stopEventPolling()
                 }
             }
+        }
+    }
+
+    private func resumeTunnelLogging() {
+        guard logRequested else { return }
+        let call: [String: Any] = [
+            "id": UUID().uuidString,
+            "method": "startLog",
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: call),
+              let payload = String(data: data, encoding: .utf8)
+        else { return }
+        Task {
+            _ = try? await TunnelManager.shared.send(.invoke(payload: payload))
         }
     }
 
