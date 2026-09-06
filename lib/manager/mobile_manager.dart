@@ -8,16 +8,16 @@ import 'package:fl_clash/providers/providers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-class AndroidManager extends ConsumerStatefulWidget {
+class MobileManager extends ConsumerStatefulWidget {
   final Widget child;
 
-  const AndroidManager({super.key, required this.child});
+  const MobileManager({super.key, required this.child});
 
   @override
-  ConsumerState<AndroidManager> createState() => _AndroidContainerState();
+  ConsumerState<MobileManager> createState() => _MobileContainerState();
 }
 
-class _AndroidContainerState extends ConsumerState<AndroidManager>
+class _MobileContainerState extends ConsumerState<MobileManager>
     with ServiceListener {
   @override
   void initState() {

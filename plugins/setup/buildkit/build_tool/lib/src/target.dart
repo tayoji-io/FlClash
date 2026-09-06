@@ -1,11 +1,15 @@
 import 'environment.dart';
 import 'error.dart';
 
+const iosMinimumVersion = '15.0';
+
 class Target {
   final String goos;
   final String goarch;
   final String? abi;
   final bool isLib;
+  final bool isArchive;
+  final String? appleSdk;
   final String? flutterPlatform;
 
   const Target({
@@ -13,6 +17,8 @@ class Target {
     required this.goarch,
     this.abi,
     this.isLib = false,
+    this.isArchive = false,
+    this.appleSdk,
     this.flutterPlatform,
   });
 
@@ -39,6 +45,26 @@ class Target {
     flutterPlatform: 'android-x64',
   );
 
+  // --- iOS (c-archive static library, linked into the tunnel extension) ---
+  static const iosDeviceArm64 = Target(
+    goos: 'ios',
+    goarch: 'arm64',
+    isArchive: true,
+    appleSdk: 'iphoneos',
+  );
+  static const iosSimulatorArm64 = Target(
+    goos: 'ios',
+    goarch: 'arm64',
+    isArchive: true,
+    appleSdk: 'iphonesimulator',
+  );
+  static const iosSimulatorAmd64 = Target(
+    goos: 'ios',
+    goarch: 'amd64',
+    isArchive: true,
+    appleSdk: 'iphonesimulator',
+  );
+
   // --- macOS (executable) ---
   static const macosArm64 = Target(goos: 'darwin', goarch: 'arm64');
   static const macosAmd64 = Target(goos: 'darwin', goarch: 'amd64');
@@ -55,6 +81,9 @@ class Target {
     androidArm,
     androidArm64,
     androidAmd64,
+    iosDeviceArm64,
+    iosSimulatorArm64,
+    iosSimulatorAmd64,
     macosArm64,
     macosAmd64,
     linuxArm64,
@@ -65,6 +94,45 @@ class Target {
 
   static List<Target> forPlatform(String platformName) {
     return all.where((t) => t.goos == platformName).toList();
+  }
+
+  static List<Target> resolveIosTargets({
+    required String sdk,
+    required List<String> archNames,
+  }) {
+    final candidates =
+        forPlatform('ios').where((t) => t.appleSdk == sdk).toList();
+    if (candidates.isEmpty) {
+      throw BuildException('Invalid iOS SDK: $sdk');
+    }
+    if (archNames.isEmpty) {
+      throw BuildException('No iOS architectures provided');
+    }
+
+    final targets = <Target>[];
+    final seen = <String>{};
+    for (final archName in archNames) {
+      final goarch = appleArchToGoArch(archName);
+      if (!seen.add(goarch)) continue;
+      final target = candidates.where((t) => t.goarch == goarch);
+      if (target.isEmpty) {
+        throw BuildException('Unsupported iOS arch for $sdk: $archName');
+      }
+      targets.add(target.single);
+    }
+    return targets;
+  }
+
+  static String appleArchToGoArch(String archName) {
+    switch (archName) {
+      case 'arm64':
+      case 'arm64e':
+        return 'arm64';
+      case 'x86_64':
+        return 'amd64';
+      default:
+        throw BuildException('Unsupported Apple arch: $archName');
+    }
   }
 
   static List<Target> resolveAndroidTargets({
@@ -121,14 +189,25 @@ class Target {
     }
   }
 
+  String get staticLibExtension => '.a';
+
   String get executableExtension => goos == 'windows' ? '.exe' : '';
 
   /// Platform build directory name (maps goos to what platform builds expect).
   /// darwin → macos, others stay as-is.
   String get platformDir => goos == 'darwin' ? 'macos' : goos;
 
+  /// Clang `-target` triple for Apple archive targets.
+  String get appleTargetTriple {
+    if (appleSdk == null) throw Exception('Not an Apple archive target');
+    final arch = goarch == 'amd64' ? 'x86_64' : goarch;
+    final suffix = appleSdk == 'iphonesimulator' ? '-simulator' : '';
+    return '$arch-apple-ios$iosMinimumVersion$suffix';
+  }
+
   bool get canBuildOnHost {
     final hostOs = Environment.hostOs;
+    if (isArchive) return hostOs == 'darwin';
     if (isLib) return true;
     return goos == hostOs;
   }
@@ -148,5 +227,8 @@ class Target {
   }
 
   @override
-  String toString() => '$goos/$goarch${abi != null ? ' ($abi)' : ''}';
+  String toString() {
+    final tag = abi ?? appleSdk;
+    return '$goos/$goarch${tag != null ? ' ($tag)' : ''}';
+  }
 }

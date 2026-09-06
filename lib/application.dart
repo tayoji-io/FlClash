@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:fl_clash/common/common.dart';
+import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/l10n/l10n.dart';
 import 'package:fl_clash/manager/hotkey_manager.dart';
 import 'package:fl_clash/manager/manager.dart';
@@ -80,6 +81,15 @@ class ApplicationState extends ConsumerState<Application> {
       );
       if (res != true) return;
       ref.read(profilesActionProvider.notifier).addProfileFormURL(url);
+    }, () {
+      ref.read(commonActionProvider.notifier).toggleRunning();
+    }, (value) {
+      final index = Mode.values.indexWhere((item) => item.name == value);
+      if (index == -1) return;
+      final mode = Mode.values[index];
+      ref
+          .read(patchClashConfigProvider.notifier)
+          .update((state) => state.copyWith(mode: mode));
     });
   }
 
@@ -98,7 +108,10 @@ class ApplicationState extends ConsumerState<Application> {
         ),
       );
     }
-    return AndroidManager(child: TileManager(child: child));
+    if (system.isIOS) {
+      return MobileManager(child: child);
+    }
+    return MobileManager(child: TileManager(child: child));
   }
 
   Widget _buildState({required Widget child}) {

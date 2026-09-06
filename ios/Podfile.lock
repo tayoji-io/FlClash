@@ -1,0 +1,28 @@
+PODS:
+  - Flutter (1.0.0)
+  - flutter_js (0.1.0):
+    - Flutter
+  - setup (0.0.1):
+    - Flutter
+
+DEPENDENCIES:
+  - Flutter (from `Flutter`)
+  - flutter_js (from `.symlinks/plugins/flutter_js/ios`)
+  - setup (from `.symlinks/plugins/setup/ios`)
+
+EXTERNAL SOURCES:
+  Flutter:
+    :path: Flutter
+  flutter_js:
+    :path: ".symlinks/plugins/flutter_js/ios"
+  setup:
+    :path: ".symlinks/plugins/setup/ios"
+
+SPEC CHECKSUMS:
+  Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
+  flutter_js: 867813c1830e1d9b2c5d547cdb6f61801e2f2145
+  setup: 7e3f36b2df6ca5910005f2c7173552d5f9dfdc41
+
+PODFILE CHECKSUM: 3c63482e143d1b91d2d2560aee9fb04ecc74ac7e
+
+COCOAPODS: 1.16.2

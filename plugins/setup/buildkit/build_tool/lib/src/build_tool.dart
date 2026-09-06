@@ -112,6 +112,94 @@ class BuildAndroidCommand extends BuildCommand {
   }
 }
 
+class BuildIosCommand extends BuildCommand {
+  BuildIosCommand() {
+    argParser.addOption(
+      'sdk',
+      valueHelp: 'iphoneos,iphonesimulator',
+      help: 'Target SDK (default: PLATFORM_NAME, else iphoneos)',
+    );
+    argParser.addOption(
+      'archs',
+      valueHelp: 'arm64,x86_64',
+      help: 'Space or comma separated arch list (default: ARCHS, else host)',
+    );
+  }
+
+  @override
+  final name = 'ios';
+
+  @override
+  final description = 'Build iOS Go core (c-archive static library)';
+
+  @override
+  Future<void> runBuildCommand() async {
+    if (!Platform.isMacOS) {
+      throw BuildException('iOS core can only be built on macOS');
+    }
+    final config = BuildConfig.load(rootDir: _rootDir);
+    final sdk = _resolveSdk();
+    final archNames = await _resolveArchs(sdk);
+    final targets = Target.resolveIosTargets(sdk: sdk, archNames: archNames);
+
+    final cache = BuildCache(rootDir: _rootDir);
+    final notice = BuildNotice();
+    final builder = GoBuilder(
+      rootDir: _rootDir,
+      config: config,
+      cache: cache,
+      notice: notice,
+    );
+    final results = await builder.buildAll(targets, force: force);
+
+    final sdkDir = p.join(_rootDir, config.outputDir, 'ios', sdk);
+    final mergedLib = p.join(sdkDir, '${config.libName}.a');
+    final mergedHeader = p.join(sdkDir, '${config.libName}.h');
+    final slices = results.map((result) => result.primaryOutput).toList();
+    final rebuilt = results.any((result) => result.rebuilt);
+
+    if (rebuilt || !File(mergedLib).existsSync()) {
+      ensureDir(sdkDir);
+      if (slices.length == 1) {
+        copyFile(slices.single, mergedLib);
+      } else {
+        await runCommandStream(
+          'lipo',
+          ['-create', ...slices, '-output', mergedLib],
+        );
+      }
+      copyFile(p.setExtension(slices.first, '.h'), mergedHeader);
+      _log.info('Build complete: $mergedLib');
+    }
+  }
+
+  String _resolveSdk() {
+    final requested = argResults?['sdk'] as String? ??
+        Platform.environment['PLATFORM_NAME'] ??
+        'iphoneos';
+    const supported = ['iphoneos', 'iphonesimulator'];
+    if (!supported.contains(requested)) {
+      throw BuildException(
+        'Unsupported iOS SDK: $requested (expected one of $supported)',
+      );
+    }
+    return requested;
+  }
+
+  Future<List<String>> _resolveArchs(String sdk) async {
+    final requested =
+        argResults?['archs'] as String? ?? Platform.environment['ARCHS'] ?? '';
+    final archNames = requested
+        .split(RegExp(r'[\s,]+'))
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty)
+        .toList();
+    if (archNames.isNotEmpty) return archNames;
+    if (sdk == 'iphoneos') return const ['arm64'];
+    return [await _hostGoArch() == 'arm64' ? 'arm64' : 'x86_64'];
+  }
+}
+
 class BuildLinuxCommand extends BuildCommand {
   BuildLinuxCommand() {
     argParser.addOption(
@@ -293,6 +381,7 @@ Future<void> runMain(List<String> args) async {
         help: 'Project root directory (default: auto-detect)',
       )
       ..addCommand(BuildAndroidCommand())
+      ..addCommand(BuildIosCommand())
       ..addCommand(BuildLinuxCommand())
       ..addCommand(BuildWindowsCommand())
       ..addCommand(BuildMacosCommand());

@@ -79,7 +79,7 @@ class SetupAction extends _$SetupAction {
       return;
     }
     commonPrint.log('init status');
-    if (system.isAndroid) {
+    if (system.isMobile) {
       await _updateStartTime();
     }
     final shouldRun = _isRunning || ref.read(appSettingProvider).autoRun;
@@ -405,7 +405,7 @@ class SetupAction extends _$SetupAction {
     if (yamlMd5 == globalState.lastConfigMd5 && force == false) {
       return _SetupTaskResult.completed;
     }
-    if (system.isAndroid) {
+    if (system.isMobile) {
       globalState.lastVpnState = ref.read(vpnStateProvider);
       final sharedState = ref.read(sharedStateProvider);
       await preferences.saveShareState(sharedState);

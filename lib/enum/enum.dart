@@ -15,7 +15,8 @@ enum SupportPlatform {
   Windows,
   MacOS,
   Linux,
-  Android;
+  Android,
+  IOS;
 
   static SupportPlatform get currentPlatform {
     if (system.isWindows) {
@@ -26,6 +27,8 @@ enum SupportPlatform {
       return SupportPlatform.Linux;
     } else if (system.isAndroid) {
       return SupportPlatform.Android;
+    } else if (system.isIOS) {
+      return SupportPlatform.IOS;
     }
     throw 'invalid platform';
   }
@@ -257,7 +260,7 @@ enum DashboardWidget {
   ),
   vpnButton(
     GridItem(crossAxisCellCount: 4, child: VpnButton()),
-    platforms: [SupportPlatform.Android],
+    platforms: [SupportPlatform.Android, SupportPlatform.IOS],
   ),
   systemProxyButton(
     GridItem(crossAxisCellCount: 4, child: SystemProxyButton()),

@@ -30,6 +30,20 @@ String _resolveCc(Target target) {
   return p.join(entries.first.path, 'bin', target.ndkCcName);
 }
 
+final _xcrunCache = <String, String>{};
+
+String _xcrun(String sdk, List<String> arguments) {
+  final key = '$sdk ${arguments.join(' ')}';
+  return _xcrunCache.putIfAbsent(key, () {
+    final result = runCommand('xcrun', ['--sdk', sdk, ...arguments]);
+    return (result.stdout as String).trim();
+  });
+}
+
+String _appleSdkPath(String sdk) => _xcrun(sdk, ['--show-sdk-path']);
+
+String _appleClang(String sdk) => _xcrun(sdk, ['--find', 'clang']);
+
 class GoBuilder {
   final String rootDir;
   final BuildConfig config;
@@ -49,18 +63,35 @@ class GoBuilder {
   Future<BuildExecution> build(Target target, {bool force = false}) async {
     // Desktop: output directly to libclash/{platform}/
     // Android: output to libclash/android/{abi}/
-    final outDir = target.isLib
-        ? p.join(_outputPath, target.platformDir, target.abi!)
-        : p.join(_outputPath, target.platformDir);
+    // iOS: output to libclash/ios/{sdk}/{goarch}/
+    final String outDir;
+    final String fileName;
+    if (target.isArchive) {
+      outDir = p.join(
+        _outputPath,
+        target.platformDir,
+        target.appleSdk!,
+        target.goarch,
+      );
+      fileName = '${config.libName}${target.staticLibExtension}';
+    } else if (target.isLib) {
+      outDir = p.join(_outputPath, target.platformDir, target.abi!);
+      fileName = '${config.libName}${target.dynamicLibExtension}';
+    } else {
+      outDir = p.join(_outputPath, target.platformDir);
+      fileName = '${config.coreName}${target.executableExtension}';
+    }
     ensureDir(outDir);
 
-    final fileName = target.isLib
-        ? '${config.libName}${target.dynamicLibExtension}'
-        : '${config.coreName}${target.executableExtension}';
     final outFile = p.join(outDir, fileName);
 
     return cache.run(
-      key: '${target.platformDir}-${target.goarch}-core',
+      key: [
+        target.platformDir,
+        if (target.appleSdk != null) target.appleSdk,
+        target.goarch,
+        'core',
+      ].join('-'),
       fingerprint: () => _calculateFingerprint(target),
       primaryOutput: outFile,
       force: force,
@@ -72,7 +103,11 @@ class GoBuilder {
         _log.info(kDoubleSeparator);
         _log.info(
           'Building Go core: $target '
-          '${target.isLib ? "(CGO, c-shared)" : "(standalone)"}',
+          '${switch (target) {
+            final t when t.isArchive => '(CGO, c-archive)',
+            final t when t.isLib => '(CGO, c-shared)',
+            _ => '(standalone)',
+          }}',
         );
         _log.info(kSeparator);
 
@@ -84,6 +119,10 @@ class GoBuilder {
         );
 
         final outputs = <String>[outFile];
+        if (target.isArchive) {
+          final header = p.setExtension(outFile, '.h');
+          if (File(header).existsSync()) outputs.add(header);
+        }
         if (target.isLib && target.abi != null) {
           outputs.addAll(
             await _adjustAndroidOutput(
@@ -117,7 +156,18 @@ class GoBuilder {
       'GOOS': target.goos,
       'GOARCH': target.goarch,
     };
-    if (target.isLib) {
+    if (target.isArchive) {
+      final sdk = target.appleSdk!;
+      final clang = _appleClang(sdk);
+      final flags = '-isysroot ${_appleSdkPath(sdk)} '
+          '-target ${target.appleTargetTriple}';
+      env
+        ..['CGO_ENABLED'] = '1'
+        ..['CC'] = clang
+        ..['CXX'] = '$clang++'
+        ..['CGO_CFLAGS'] = flags
+        ..['CGO_LDFLAGS'] = flags;
+    } else if (target.isLib) {
       env
         ..['CGO_ENABLED'] = '1'
         ..['CC'] = _resolveCc(target)
@@ -132,7 +182,10 @@ class GoBuilder {
         'build',
         '-ldflags=${config.goLdflags}',
         '-tags=${config.tags}',
-        if (target.isLib) '-buildmode=c-shared',
+        if (target.isArchive)
+          '-buildmode=c-archive'
+        else if (target.isLib)
+          '-buildmode=c-shared',
         if (outFile != null) ...['-o', outFile],
       ];
 
@@ -146,6 +199,8 @@ class GoBuilder {
         'goarch': target.goarch,
         'abi': target.abi,
         'is_lib': target.isLib,
+        'is_archive': target.isArchive,
+        'apple_sdk': target.appleSdk,
         'flutter_platform': target.flutterPlatform,
       })
       ..addValue('config', config.toFingerprintMap())
@@ -197,7 +252,17 @@ class GoBuilder {
     }
     inputs.addAll(collectBuildToolInputs(rootDir));
 
-    if (target.isLib) {
+    if (target.isArchive) {
+      final sdk = target.appleSdk!;
+      builder
+        ..addValue('apple_sdk_version', _xcrun(sdk, ['--show-sdk-version']))
+        ..addValue('apple_sdk_path', _appleSdkPath(sdk))
+        ..addValue('apple_target', target.appleTargetTriple)
+        ..addValue(
+          'apple_compiler',
+          (runCommand(_appleClang(sdk), ['--version']).stdout as String).trim(),
+        );
+    } else if (target.isLib) {
       final compiler = env['CC']!;
       final compilerVersion = runCommand(compiler, ['--version']);
       builder.addValue(

@@ -312,13 +312,13 @@ class NetworkListView extends StatelessWidget {
     final appLocalizations = context.appLocalizations;
     return generateListView([
       if (system.isAndroid) const VPNItem(),
-      if (system.isAndroid)
+      if (system.isMobile)
         ...generateSection(
           title: 'VPN',
           items: [
             const VpnSystemProxyItem(),
             const BypassDomainItem(),
-            const AllowBypassItem(),
+            if (system.isAndroid) const AllowBypassItem(),
             const Ipv6Item(),
             const DNSHijackingItem(),
           ],

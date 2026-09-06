@@ -2,7 +2,7 @@
 
 ## Core Integration
 
-The Go proxy core in `core/` operates in two modes.
+The Go proxy core in `core/` operates in three modes.
 
 Android lib mode:
 
@@ -12,6 +12,31 @@ Android lib mode:
 - `lib/core/lib.dart` (`CoreLib`) implements the shared Core interface, gates method calls on its connection completer,
   initializes and synchronizes Android shared state, and closes the native service path exactly once.
 - Because Core is in the application process on Android, application RSS already includes Core memory.
+
+iOS dual-instance mode:
+
+- Go core is compiled as a C static archive, `libclash.a`, through `go build -buildmode=c-archive` with CGO, once per
+  Apple SDK. `core/bride.c` is plain C function pointers rather than JNI, so the same bridge serves Android and iOS;
+  Swift installs the implementations in `ios/Shared/CoreBridge.swift`.
+- iOS gives a VPN no way to run in the application process, so there are two Core instances. The app process owns the
+  Core that answers configuration, proxy listing, and delay-test calls, which keeps those available before the tunnel
+  is running. The `PacketTunnelProvider` extension process owns the Core attached to the TUN device.
+- `ServicePlugin` in `ios/Runner/Plugins/` implements the same `${packageName}/service` MethodChannel Android uses, so
+  `lib/core/lib.dart` (`CoreLib`) and `lib/plugins/service.dart` are shared unchanged. The plugin routes each call:
+  runtime methods (traffic, connections, memory, log) go to the extension when the tunnel is connected, mutating
+  methods (proxy selection, config, geo) are broadcast to both instances, and everything else stays local.
+- App and extension talk over `NETunnelProviderSession.sendProviderMessage` with the envelope in
+  `ios/Shared/TunnelMessage.swift`. Core events from the extension are drained by a long poll rather than pushed,
+  because the session channel is request/response only.
+- The extension is launched by the system, not the app, so the configuration it needs is published to the shared App
+  Group by `ios/Shared/SharedStore.swift`. `appPath.homeDirPath` resolves to that same container, which is what lets
+  both processes read one profile directory.
+- iOS has no per-application routing and exempts an extension's own sockets from its tunnel, so `protect` and
+  `resolveProcess` are inert on this platform.
+- Only the extension's Core may hold inbound listeners. `startListener`/`stopListener` are routed to the tunnel alone, so
+  the app's Core never enters the running state and never competes for the mixed port. Settings that bind a port from
+  `ApplyConfig` itself, the external controller and a configured `dns.listen`, would still be claimed by both processes;
+  the external controller and process-matching settings are therefore hidden on iOS.
 
 Desktop core mode:
 
@@ -29,7 +54,8 @@ Desktop core mode:
 - `lib/core/desktop/launcher.dart` abstracts direct child-process and Windows Helper ownership through idempotent process
   leases. `lib/core/desktop/helper_client.dart` is the typed loopback HTTP client for the privileged Helper.
 
-`lib/core/controller.dart` (`CoreController`) selects the implementation based on platform. `lib/core/interface.dart` defines the shared `CoreHandlerInterface`.
+`lib/core/controller.dart` (`CoreController`) selects the implementation based on platform: both mobile platforms use
+`CoreLib`, desktop uses `CoreService`. `lib/core/interface.dart` defines the shared `CoreHandlerInterface`.
 
 Key Go core files:
 
@@ -194,8 +220,11 @@ Managers are nested `InheritedWidget`/`StatefulWidget` components in `lib/applic
 AppEnvManager > StatusManager > ThemeManager
   > [Desktop: WindowManager > TrayManager > HotKeyManager > ProxyManager]
   > ConnectivityManager > CoreManager > AppStateManager
-  > [Mobile: AndroidManager > VpnManager | Desktop: WindowHeaderContainer]
+  > [Mobile: MobileManager (+ TileManager on Android) > VpnManager | Desktop: WindowHeaderContainer]
 ```
+
+`MobileManager` owns shared-state synchronization and Core event forwarding for both mobile platforms. `TileManager` is
+Android-only because iOS has no Quick Settings equivalent.
 
 Each manager in `lib/manager/` handles a specific platform concern. Desktop-only managers are conditionally inserted.
 
@@ -230,8 +259,8 @@ Desktop:
 
 Mobile:
 
-- `AndroidManager`
-- `TileManager`
+- `MobileManager`
+- `TileManager` (Android only)
 - `VpnManager`
 
 Shared:
@@ -259,6 +288,9 @@ Platform build hooks inside `flutter build` trigger `build_tool` automatically:
 - Linux: CMake include, `buildkit/cmake/buildkit.cmake`, `build_tool linux`.
 - Windows: CMake include, `buildkit/cmake/buildkit.cmake`, `build_tool windows`. CMake forwards the active configuration through `BUILDKIT_CONFIGURATION`.
 - Android: Gradle include, `buildkit/gradle/plugin.gradle`, `build_tool android`.
+- iOS: Xcode `Build Go Core` run-script phase on both the `Runner` and `PacketTunnel` targets, `build_tool ios`. The
+  phase lives on the targets rather than in a podspec because the extension target is not built through CocoaPods and
+  is linked before the app.
 
 ### Setup Build Harness Plugin
 
@@ -284,6 +316,8 @@ Platform outputs remain explicit:
 - macOS and Linux build a standalone `FlClashCore` process used by the desktop socket integration.
 - Windows builds `FlClashCore.exe`, the Rust `FlClashHelperService.exe` privileged helper, and a
   `manifest.json` containing only `coreSha256`.
+- iOS builds one `c-archive` per architecture under `libclash/ios/<sdk>/<goarch>/`, then merges them with `lipo` into
+  `libclash/ios/<sdk>/libclash.a`. Xcode resolves the right one through `$(PLATFORM_NAME)` in its search paths.
 
 The hooks follow rust_api/Cargokit's phony-output scheduling pattern, but setup uses its own cache because it builds both a
 Go core and, on Windows, a separate Rust helper. Per-target records live under `.dart_tool/setup_build_cache/v1/`:
@@ -338,7 +372,8 @@ Architecture detection is automatic. The `--description` flag passed to `flutter
 
 - `setup`: build-time harness for Go core artifacts and the Windows Rust helper; no runtime Dart API.
 - `proxy`: system proxy configuration.
-- `rust_api`: runtime Flutter Rust Bridge FFI plugin built through Cargokit.
+- `rust_api`: runtime Flutter Rust Bridge FFI plugin built through Cargokit; desktop only, because the mobile
+  platforms reach Core in-process instead of over local IPC.
 - `tray_manager`: system tray fork/customization.
 - `wifi_ssid`: Wi-Fi SSID detection.
 - `window_ext`: window extensions.

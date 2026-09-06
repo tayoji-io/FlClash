@@ -90,6 +90,9 @@ class _AppStateManagerState extends ConsumerState<AppStateManager>
         ref.read(setupActionProvider.notifier).tryCheckIp();
       });
     }
+    if (state == AppLifecycleState.paused && system.isIOS) {
+      await coreController.requestGc();
+    }
   }
 
   @override

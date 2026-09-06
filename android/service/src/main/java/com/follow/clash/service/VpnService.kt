@@ -152,6 +152,7 @@ class VpnService : SystemVpnService(), ManagedService {
                     stack = options.stack,
                     address = options.tunAddress,
                     dns = options.tunDns,
+                    mtu = MTU,
                 )
             } catch (error: Exception) {
                 stopTunLocked()

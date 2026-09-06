@@ -29,7 +29,7 @@ class _ConnectivityManagerState extends State<ConnectivityManager> {
   void initState() {
     super.initState();
     subscription = Connectivity().onConnectivityChanged.listen((results) {
-      if (results.contains(ConnectivityResult.wifi)) {
+      if (results.contains(ConnectivityResult.wifi) && !system.isIOS) {
         WifiSsidManager.instance.getSsid().then((ssid) {
           globalState.container.read(currentSSIDProvider.notifier).value = ssid;
           commonPrint.log('Wi-fi SSID: $ssid ', logLevel: LogLevel.info);

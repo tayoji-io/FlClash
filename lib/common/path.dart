@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:fl_clash/common/common.dart';
+import 'package:fl_clash/plugins/ios.dart';
 import 'package:path/path.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -54,6 +55,12 @@ class AppPath {
   }
 
   Future<String> get homeDirPath async {
+    if (system.isIOS) {
+      final sharedPath = await ios?.getHomeDir() ?? '';
+      if (sharedPath.isNotEmpty) {
+        return sharedPath;
+      }
+    }
     final directory = await dataDir.future;
     return directory.path;
   }
@@ -99,8 +106,8 @@ class AppPath {
   }
 
   Future<String> get profilesPath async {
-    final directory = await dataDir.future;
-    return join(directory.path, profilesDirectoryName);
+    final mHomeDirPath = await homeDirPath;
+    return join(mHomeDirPath, profilesDirectoryName);
   }
 
   Future<String> getProfilePath(String fileName) async {

@@ -50,6 +50,9 @@ class Service {
             }
           }
           break;
+        case 'log':
+          commonPrint.log(call.arguments as String? ?? '');
+          break;
         default:
           throw MissingPluginException();
       }
@@ -113,4 +116,4 @@ class Service {
   }
 }
 
-Service? get service => system.isAndroid ? Service() : null;
+Service? get service => system.isMobile ? Service() : null;

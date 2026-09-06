@@ -7,15 +7,17 @@ description: Use when changing FlClash Core integration, lifecycle/process owner
 
 ## When To Use
 
-Use this for changes touching `lib/core/`, `lib/manager/`, `core/`, `services/helper/`, Android app/service modules, build
-hooks, system proxy, tray, VPN, TUN, or platform-specific desktop/mobile behavior.
+Use this for changes touching `lib/core/`, `lib/manager/`, `core/`, `services/helper/`, Android app/service modules, the
+iOS app and tunnel extension, build hooks, system proxy, tray, VPN, TUN, or platform-specific desktop/mobile behavior.
 
 ## Workflow
 
 1. Identify the authoritative owner before changing behavior:
    - Shared facade/protocol: `lib/core/controller.dart`, `lib/core/interface.dart`, and `lib/core/method.dart`.
-   - Android Core connection: `lib/core/lib.dart`, `lib/plugins/service.dart`, and Android `ServicePlugin`.
+   - Mobile Core connection: `lib/core/lib.dart`, `lib/plugins/service.dart`, and the platform `ServicePlugin`.
    - Android start/stop intent: `ServiceState`; binding/process-time bookkeeping: `ServiceController`.
+   - iOS Core split and call routing: `ios/Runner/Plugins/ServicePlugin.swift`; tunnel ownership:
+     `ios/PacketTunnel/PacketTunnelProvider.swift`; VPN profile ownership: `ios/Runner/Plugins/TunnelManager.swift`.
    - Desktop composition: `lib/core/service.dart`; lifecycle/process ownership: `lib/core/desktop/lifecycle.dart`.
    - Desktop IPC/RPC: `lib/core/desktop/transport.dart` and `lib/core/desktop/rpc_client.dart`.
    - Desktop launch ownership: `lib/core/desktop/launcher.dart`; Windows Helper HTTP contract:
@@ -37,6 +39,7 @@ hooks, system proxy, tray, VPN, TUN, or platform-specific desktop/mobile behavio
    - Cross-language envelopes/events: `test/core/protocol_contract_test.dart` and `CGO_ENABLED=0 go test .`.
    - Provider/exit convergence: `test/providers/action_test.dart` and `test/providers/system_action_test.dart`.
    - Android Kotlin: compile each touched Gradle module with JDK 17.
+   - iOS Swift: build both the `Runner` and `PacketTunnel` targets; the Simulator cannot exercise the extension.
    - Windows Helper: Cargo format/tests; run the `windows-service` feature on Windows.
 8. Explicitly state host gaps. Always-on VPN, VPN permission, system revoke, named-pipe peer identity, and Windows Service
    Control Manager behavior need their real platform even when portable tests pass.
@@ -69,5 +72,11 @@ Read `.agents/architecture.md` for the current core modes, manager stack, build 
 - Keep log/request floods from evicting state-bearing Core events. Each queue may evict only its own oldest item.
 - Do not expose direct filesystem deletion APIs through Core or helper IPC; use
   a scope-specific cleanup API instead.
+- iOS runs two Core instances. A change that mutates Core state must reach both, or the tunnel and the UI disagree; keep
+  `ServicePlugin`'s runtime/broadcast/local routing tables in sync with `CoreMethod`.
+- The iOS extension is started by the system and only reads configuration from the App Group, so anything it needs must be
+  written through `SharedStore` before the tunnel starts, not passed at start time.
+- Do not move the iOS Go core build into a podspec. The extension target is not built through CocoaPods and links before
+  the app.
 - `plugins/setup/` is a build harness, not a Dart API plugin.
 - Build hooks can trigger Go or Rust compilation indirectly through Flutter platform builds.

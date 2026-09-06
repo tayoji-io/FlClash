@@ -16,12 +16,12 @@ import (
 	"github.com/metacubex/mihomo/component/dialer"
 	"github.com/metacubex/mihomo/component/process"
 	"github.com/metacubex/mihomo/constant"
-	"github.com/metacubex/mihomo/dns"
 	"github.com/metacubex/mihomo/listener/sing_tun"
 	"github.com/metacubex/mihomo/log"
 	"golang.org/x/sync/semaphore"
+	"math"
 	"net"
-	"strings"
+	"runtime/debug"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -36,13 +36,13 @@ type TunHandler struct {
 	limit *semaphore.Weighted
 }
 
-func (th *TunHandler) start(fd int, stack, address, dns string) {
+func (th *TunHandler) start(fd int, stack, address, dns string, mtu int) {
 	runLock.Lock()
 	defer runLock.Unlock()
 	_ = th.limit.Acquire(context.TODO(), 4)
 	defer th.limit.Release(4)
 	th.initHook()
-	tunListener := t.Start(fd, stack, address, dns)
+	tunListener := t.Start(fd, stack, address, dns, mtu)
 	if tunListener != nil {
 		log.Infoln("TUN address: %v", tunListener.Address())
 		th.listener = tunListener
@@ -138,7 +138,7 @@ func handleStopTun() {
 	}
 }
 
-func handleStartTun(callback unsafe.Pointer, fd int, stack, address, dns string) {
+func handleStartTun(callback unsafe.Pointer, fd int, stack, address, dns string, mtu int) {
 	handleStopTun()
 	tunLock.Lock()
 	defer tunLock.Unlock()
@@ -147,16 +147,8 @@ func handleStartTun(callback unsafe.Pointer, fd int, stack, address, dns string)
 			callback: callback,
 			limit:    semaphore.NewWeighted(4),
 		}
-		tunHandler.start(fd, stack, address, dns)
+		tunHandler.start(fd, stack, address, dns, mtu)
 	}
-}
-
-func handleUpdateDns(value string) {
-	go func() {
-		log.Infoln("[DNS] updateDns %s", value)
-		dns.UpdateSystemDNS(strings.Split(value, ","))
-		dns.FlushCacheWithDefaultResolver()
-	}()
 }
 
 func (response MethodResponse) send() {
@@ -200,8 +192,8 @@ func invokeMethod(callback unsafe.Pointer, paramsChar *C.char) {
 }
 
 //export startTUN
-func startTUN(callback unsafe.Pointer, fd C.int, stackChar, addressChar, dnsChar *C.char) bool {
-	handleStartTun(callback, int(fd), takeCString(stackChar), takeCString(addressChar), takeCString(dnsChar))
+func startTUN(callback unsafe.Pointer, fd C.int, stackChar, addressChar, dnsChar *C.char, mtu C.int) bool {
+	handleStartTun(callback, int(fd), takeCString(stackChar), takeCString(addressChar), takeCString(dnsChar), int(mtu))
 	if !isRunning {
 		handleStartListener()
 	} else {
@@ -291,6 +283,15 @@ func stopTun() {
 //export suspend
 func suspend(suspended bool) {
 	handleSuspend(suspended)
+}
+
+//export setMemoryLimit
+func setMemoryLimit(bytes C.longlong) {
+	if bytes <= 0 {
+		debug.SetMemoryLimit(math.MaxInt64)
+		return
+	}
+	debug.SetMemoryLimit(int64(bytes))
 }
 
 //export forceGC

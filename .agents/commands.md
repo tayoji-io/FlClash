@@ -24,6 +24,7 @@ make core-macos
 make core-linux
 make core-windows
 make core-android
+make core-ios
 ```
 
 Pass `ARCH` or `TARGET_PLATFORM` through `make` when needed, for example:
@@ -31,7 +32,13 @@ Pass `ARCH` or `TARGET_PLATFORM` through `make` when needed, for example:
 ```bash
 make core-macos ARCH=arm64
 make core-android TARGET_PLATFORM=android-arm64
+make core-ios SDK=iphonesimulator ARCHS=arm64
 ```
+
+The iOS core is a `c-archive` static library, one per SDK, merged with `lipo`
+into `libclash/ios/<sdk>/libclash.a`. `SDK` defaults to Xcode's `PLATFORM_NAME`
+and `ARCHS` to Xcode's `ARCHS`, so the Xcode build phase builds only the slice
+the current configuration needs.
 
 Core builds use setup's input fingerprint cache. Pass `FORCE=1` to bypass it,
 for example `make core-macos ARCH=arm64 FORCE=1`.
@@ -141,6 +148,17 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home ./gradl
 
 Always-on VPN entry, system VPN revoke, actual permission UI, and rapid device start/stop still require Android device or
 emulator validation; Kotlin compilation cannot prove those system callbacks.
+
+iOS native changes compile through Xcode. The tunnel extension cannot run in the
+Simulator, so the extension's own path needs a signed device build:
+
+```bash
+flutter build ios --no-codesign
+xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner -sdk iphoneos -configuration Debug build
+```
+
+VPN permission, tunnel start/stop, the utun descriptor lookup, and the extension
+memory ceiling all require a real device.
 
 ## Verify
 
