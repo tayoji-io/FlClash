@@ -54,6 +54,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         CoreBridge.applyMemoryLimit(Self.memoryLimit())
         installEventListener()
+        startCoreLogging()
         CoreBridge.setup(initParams: initParams, setupParams: setupParams) { [weak self] message in
             guard let self else { return }
             if let message, !message.isEmpty {
@@ -267,6 +268,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     // MARK: - Events
 
+    private func startCoreLogging() {
+        let call: [String: Any] = [
+            "id": UUID().uuidString,
+            "method": "startLog",
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: call),
+              let payload = String(data: data, encoding: .utf8)
+        else { return }
+        CoreBridge.invoke(payload) { _ in }
+    }
+
     private func installEventListener() {
         CoreBridge.updateEventListener { [weak self] message in
             guard let self, let message else { return }
@@ -275,6 +287,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func enqueue(event: String) {
+        if event.contains("\"log\"") {
+            TunnelLogStore.append(event)
+        }
         stateQueue.async {
             if let waiter = self.eventWaiter {
                 self.eventWaiter = nil

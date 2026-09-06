@@ -34,6 +34,11 @@ class Ios {
     return next.future;
   }
 
+  Future<List<String>> drainTunnelLog() async {
+    final value = await methodChannel.invokeListMethod<String>('drainTunnelLog');
+    return value ?? const [];
+  }
+
   Future<String> readWidgetMode() async {
     return await methodChannel.invokeMethod<String>('readWidgetMode') ?? '';
   }
