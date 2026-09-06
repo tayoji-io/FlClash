@@ -103,13 +103,23 @@ struct TunnelToggle: View {
     var body: some View {
         Capsule()
             .fill(running ? Color.green : Color.secondary.opacity(0.35))
-            .frame(width: 42, height: 25)
-            .overlay(alignment: running ? .trailing : .leading) {
-                Circle()
-                    .fill(.white)
-                    .frame(width: 21, height: 21)
-                    .padding(.horizontal, 2)
-                    .shadow(radius: 0.5)
+            .frame(width: 52)
+            .frame(maxHeight: .infinity)
+            .overlay {
+                GeometryReader { geometry in
+                    let inset: CGFloat = 3
+                    let diameter = max(geometry.size.height - inset * 2, 0)
+                    Circle()
+                        .fill(.white)
+                        .shadow(radius: 0.5)
+                        .frame(width: diameter, height: diameter)
+                        .position(
+                            x: running
+                                ? geometry.size.width - diameter / 2 - inset
+                                : diameter / 2 + inset,
+                            y: geometry.size.height / 2
+                        )
+                }
             }
     }
 }
@@ -186,6 +196,7 @@ struct TunnelWidgetView: View {
                     TunnelToggle(running: entry.snapshot.running)
                 }
             }
+            .fixedSize(horizontal: false, vertical: true)
         }
         .containerBackgroundIfAvailable()
     }
