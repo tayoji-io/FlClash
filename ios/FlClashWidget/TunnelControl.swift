@@ -31,6 +31,7 @@ struct SetTunnelIntent: SetValueIntent {
             WidgetStore.publish(
                 running: value,
                 profileName: previous.profileName,
+                proxyName: previous.proxyName,
                 mode: previous.mode
             )
             WidgetCenter.shared.reloadAllTimelines()

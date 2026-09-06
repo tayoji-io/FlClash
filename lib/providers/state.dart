@@ -585,6 +585,26 @@ SharedState sharedState(Ref ref) {
     ),
   );
   final vpnSetting = ref.watch(vpnSettingProvider);
+  final groups = ref.watch(groupsProvider);
+  final entryGroup = groups
+      .where((item) => item.hidden == false)
+      .where((item) => item.name != GroupName.GLOBAL.name)
+      .firstOrNull;
+  final currentProxyName = switch (clashConfigVM4.d) {
+    'direct' => 'DIRECT',
+    'global' => computeRealSelectedProxyState(
+      GroupName.GLOBAL.name,
+      groups: groups,
+      selectedMap: ref.watch(selectedMapProvider),
+    ).proxyName,
+    _ => entryGroup == null
+        ? ''
+        : computeRealSelectedProxyState(
+            entryGroup.name,
+            groups: groups,
+            selectedMap: ref.watch(selectedMapProvider),
+          ).proxyName,
+  };
   final currentProfileName = currentProfileVM2.a;
   final selectedMap = currentProfileVM2.b;
   final onlyStatisticsProxy = appSettingVM3.a;
@@ -596,6 +616,7 @@ SharedState sharedState(Ref ref) {
   final mode = clashConfigVM4.d;
   return SharedState(
     currentProfileName: currentProfileName,
+    currentProxyName: currentProxyName,
     mode: mode,
     onlyStatisticsProxy: onlyStatisticsProxy,
     stopText: currentAppLocalizations.stop,

@@ -16,8 +16,22 @@ struct TunnelProvider: TimelineProvider {
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<TunnelEntry>) -> Void) {
-        let entry = TunnelEntry(date: Date(), snapshot: WidgetStore.read())
-        completion(Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(900))))
+        Task {
+            var snapshot = WidgetStore.read()
+            if snapshot.running,
+               let live = await TunnelBridge.liveTotalTraffic(onlyStatisticsProxy: false) {
+                snapshot.uploadTotal = live.0
+                snapshot.downloadTotal = live.1
+                WidgetStore.publishTraffic(upload: live.0, download: live.1)
+            }
+            let entry = TunnelEntry(date: Date(), snapshot: snapshot)
+            completion(
+                Timeline(
+                    entries: [entry],
+                    policy: .after(Date().addingTimeInterval(300))
+                )
+            )
+        }
     }
 }
 
@@ -39,27 +53,91 @@ enum TunnelMode: String, CaseIterable {
     }
 }
 
-struct ModeRow: View {
-    let current: String
+struct ModeLabel: View {
+    let mode: TunnelMode
+    let isCurrent: Bool
 
     var body: some View {
-        HStack(spacing: 4) {
+        Text(mode.label)
+            .font(.caption2)
+            .fontWeight(isCurrent ? .semibold : .regular)
+            .foregroundStyle(isCurrent ? Color.primary : Color.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 7)
+            .background(
+                Group {
+                    if isCurrent {
+                        Capsule().fill(.background.opacity(0.9))
+                            .shadow(color: .black.opacity(0.12), radius: 1, y: 0.5)
+                    }
+                }
+            )
+            .contentShape(Capsule())
+    }
+}
+
+struct ModeRow: View {
+    let current: String
+    let canSwitchInPlace: Bool
+
+    var body: some View {
+        HStack(spacing: 2) {
             ForEach(TunnelMode.allCases, id: \.rawValue) { mode in
-                Link(destination: mode.url) {
-                    Text(mode.label)
-                        .font(.caption2.weight(mode.rawValue == current ? .bold : .regular))
-                        .foregroundStyle(mode.rawValue == current ? Color.accentColor : .secondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 4)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(mode.rawValue == current
-                                      ? Color.accentColor.opacity(0.15)
-                                      : Color.secondary.opacity(0.08))
-                        )
+                let label = ModeLabel(mode: mode, isCurrent: mode.rawValue == current)
+                if canSwitchInPlace, #available(iOS 17.0, *) {
+                    Button(intent: SetModeIntent(mode: mode.rawValue)) { label }
+                        .buttonStyle(.plain)
+                } else {
+                    Link(destination: mode.url) { label }
                 }
             }
         }
+        .padding(2)
+        .background(Capsule().fill(Color.secondary.opacity(0.15)))
+    }
+}
+
+struct TunnelToggle: View {
+    let running: Bool
+
+    var body: some View {
+        Capsule()
+            .fill(running ? Color.green : Color.secondary.opacity(0.35))
+            .frame(width: 42, height: 25)
+            .overlay(alignment: running ? .trailing : .leading) {
+                Circle()
+                    .fill(.white)
+                    .frame(width: 21, height: 21)
+                    .padding(.horizontal, 2)
+                    .shadow(radius: 0.5)
+            }
+    }
+}
+
+struct TrafficRow: View {
+    let upload: Int64
+    let download: Int64
+
+    private static let formatter: ByteCountFormatter = {
+        let value = ByteCountFormatter()
+        value.countStyle = .binary
+        value.allowedUnits = [.useKB, .useMB, .useGB, .useTB]
+        return value
+    }()
+
+    private func format(_ bytes: Int64) -> String {
+        Self.formatter.string(fromByteCount: max(bytes, 0))
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Label(format(download), systemImage: "arrow.down")
+            Label(format(upload), systemImage: "arrow.up")
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
     }
 }
 
@@ -67,38 +145,46 @@ struct TunnelWidgetView: View {
     @Environment(\.widgetFamily) private var family
     var entry: TunnelEntry
 
-    private var accent: Color { entry.snapshot.running ? .green : .secondary }
+    private var isCompact: Bool { family == .systemSmall }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: entry.snapshot.running
-                      ? "bolt.horizontal.fill" : "bolt.horizontal")
-                    .foregroundStyle(accent)
-                Text("FlClash")
-                    .font(.headline)
-                Spacer()
+            Text(
+                entry.snapshot.proxyName.isEmpty
+                    ? entry.snapshot.profileName
+                    : entry.snapshot.proxyName
+            )
+            .font(.system(size: isCompact ? 15 : 17, weight: .bold))
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            HStack(spacing: 4) {
+                Text(entry.snapshot.profileName)
+                    .lineLimit(1)
+                Text("·")
+                Text(entry.snapshot.running ? "已连接" : "未连接")
+                    .foregroundStyle(entry.snapshot.running ? .green : .secondary)
             }
-            Text(entry.snapshot.profileName)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            if family != .systemSmall {
-                ModeRow(current: entry.snapshot.mode)
-            }
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
             Spacer(minLength: 0)
-            if #available(iOS 17.0, *) {
-                Button(intent: ToggleTunnelIntent()) {
-                    Text(entry.snapshot.running ? "停止" : "启动")
-                        .font(.caption.bold())
-                        .frame(maxWidth: .infinity)
+            TrafficRow(
+                upload: entry.snapshot.uploadTotal,
+                download: entry.snapshot.downloadTotal
+            )
+            Spacer(minLength: 0)
+            HStack(spacing: 8) {
+                ModeRow(
+                    current: entry.snapshot.mode,
+                    canSwitchInPlace: entry.snapshot.running
+                )
+                if #available(iOS 17.0, *) {
+                    Button(intent: ToggleTunnelIntent()) {
+                        TunnelToggle(running: entry.snapshot.running)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    TunnelToggle(running: entry.snapshot.running)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(accent)
-            } else {
-                Text(entry.snapshot.running ? "运行中" : "已停止")
-                    .font(.caption.bold())
-                    .foregroundStyle(accent)
             }
         }
         .containerBackgroundIfAvailable()

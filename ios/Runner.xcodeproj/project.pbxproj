@@ -37,6 +37,7 @@
 		982406CD36ECC65F31BA4BF8 /* FlClashWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF72E009465FE486C1D57387 /* FlClashWidgetBundle.swift */; };
 		98B51EBD5319AC764A732FDC /* TunnelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9F96479CC7965929C22926C /* TunnelManager.swift */; };
 		A4A6E28AD7E870162BBC97FF /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E2FBC7CAAC21F65806776CD0 /* Foundation.framework */; };
+		BA063D808E029BBC54A0757C /* SetModeIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CF7E21A4C21D5EBB892E312 /* SetModeIntent.swift */; };
 		BBBD7B38E948BBEDB1AEA701 /* WidgetStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 356B663F24A8592AE42CD2F1 /* WidgetStore.swift */; };
 		C1F216600CA95637E43FEEA4 /* Pods_Runner.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A83C764937B6D650C6CF69F0 /* Pods_Runner.framework */; };
 		D49705DEA3569871748B3432 /* IosPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0BE8BB9668EB8B2264DC476 /* IosPlugin.swift */; };
@@ -44,6 +45,7 @@
 		DF619645560049CAC74DC114 /* WidgetStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 356B663F24A8592AE42CD2F1 /* WidgetStore.swift */; };
 		E1324B0C12A30E323BF3A742 /* SharedStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AB680CA1592ACA1FF74CE26 /* SharedStore.swift */; };
 		E358772733205DDD25305647 /* TunnelMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 891C42E3BDFF4CAE447A8632 /* TunnelMessage.swift */; };
+		F3758716AFF0299F9827D3D6 /* TunnelMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 891C42E3BDFF4CAE447A8632 /* TunnelMessage.swift */; };
 		FEC1C2BB604AECB0C8EF8898 /* TunnelBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C7281A0ACEF71F965825B9B /* TunnelBridge.swift */; };
 /* End PBXBuildFile section */
 
@@ -136,6 +138,7 @@
 		97C147001CF9000F007C117D /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		97C147021CF9000F007C117D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		9A1A9A28C8C85ECCE348D2B2 /* Pods-Runner.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.debug.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"; sourceTree = "<group>"; };
+		9CF7E21A4C21D5EBB892E312 /* SetModeIntent.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SetModeIntent.swift; sourceTree = "<group>"; };
 		A83C764937B6D650C6CF69F0 /* Pods_Runner.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_Runner.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		AC001C308605FDF5EB423661 /* TunnelWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TunnelWidget.swift; sourceTree = "<group>"; };
 		B2BE70AC7995F2191D481D23 /* TunnelControl.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TunnelControl.swift; sourceTree = "<group>"; };
@@ -315,6 +318,7 @@
 				3C7281A0ACEF71F965825B9B /* TunnelBridge.swift */,
 				DE9742BE348BF548B6745227 /* Info.plist */,
 				7CEEC2BE175BA2882DA1BF60 /* FlClashWidget.entitlements */,
+				9CF7E21A4C21D5EBB892E312 /* SetModeIntent.swift */,
 			);
 			path = FlClashWidget;
 			sourceTree = "<group>";
@@ -651,6 +655,8 @@
 				83090ACA532C5325261DD567 /* CoreIdentifiers.swift in Sources */,
 				E1324B0C12A30E323BF3A742 /* SharedStore.swift in Sources */,
 				DF619645560049CAC74DC114 /* WidgetStore.swift in Sources */,
+				F3758716AFF0299F9827D3D6 /* TunnelMessage.swift in Sources */,
+				BA063D808E029BBC54A0757C /* SetModeIntent.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

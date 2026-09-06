@@ -4,6 +4,7 @@ import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/core/controller.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/manager/window_manager.dart';
+import 'package:fl_clash/plugins/ios.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
 import 'package:fl_clash/widgets/animated_visibility.dart';
@@ -93,6 +94,22 @@ class _AppStateManagerState extends ConsumerState<AppStateManager>
     if (state == AppLifecycleState.paused && system.isIOS) {
       await coreController.requestGc();
     }
+    if (state == AppLifecycleState.resumed && system.isIOS) {
+      await _syncWidgetMode();
+    }
+  }
+
+  Future<void> _syncWidgetMode() async {
+    final value = await ios?.readWidgetMode() ?? '';
+    if (value.isEmpty) return;
+    final ref = globalState.container;
+    final index = Mode.values.indexWhere((item) => item.name == value);
+    if (index == -1) return;
+    final mode = Mode.values[index];
+    if (ref.read(patchClashConfigProvider).mode == mode) return;
+    ref
+        .read(patchClashConfigProvider.notifier)
+        .update((state) => state.copyWith(mode: mode));
   }
 
   @override

@@ -1,4 +1,5 @@
 import NetworkExtension
+import WidgetKit
 import os
 
 final class PacketTunnelProvider: NEPacketTunnelProvider {
@@ -14,12 +15,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private let log = Logger(subsystem: "com.follow.clash.ios", category: "tunnel")
     private let stateQueue = DispatchQueue(label: "com.follow.clash.ios.tunnel.state")
+    private let trafficQueue = DispatchQueue(label: "com.follow.clash.ios.tunnel.traffic")
 
     private var pendingEvents: [String] = []
     private var eventWaiter: (([String]) -> Void)?
     private var eventTimeoutItem: DispatchWorkItem?
     private var startedAt: Date?
     private var tunnelRunning = false
+    private var trafficTimer: DispatchSourceTimer?
+    private var trafficTicks = 0
+    private var onlyStatisticsProxy = false
 
     override func startTunnel(
         options: [String: NSObject]?,
@@ -44,6 +49,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return
         }
 
+        onlyStatisticsProxy = sharedState.onlyStatisticsProxy ?? false
         let setupParams = sharedState.setupParams.flatMap(encodeSetupParams) ?? "{}"
 
         CoreBridge.applyMemoryLimit(Self.memoryLimit())
@@ -205,11 +211,44 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         stateQueue.sync { startedAt = Date() }
         tunnelRunning = true
+        startTrafficPublishing()
         log.info("Tunnel attached on fd \(fd, privacy: .public)")
         completionHandler(nil)
     }
 
+    private func startTrafficPublishing() {
+        stopTrafficPublishing()
+        let timer = DispatchSource.makeTimerSource(queue: trafficQueue)
+        timer.schedule(deadline: .now(), repeating: .seconds(30))
+        timer.setEventHandler { [weak self] in
+            self?.publishTraffic()
+        }
+        timer.resume()
+        trafficTimer = timer
+    }
+
+    private func stopTrafficPublishing() {
+        trafficTimer?.cancel()
+        trafficTimer = nil
+        trafficTicks = 0
+    }
+
+    private func publishTraffic() {
+        let raw = CoreBridge.totalTraffic(onlyStatisticsProxy: onlyStatisticsProxy)
+        guard let data = raw.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+        let up = (object["up"] as? NSNumber)?.int64Value ?? 0
+        let down = (object["down"] as? NSNumber)?.int64Value ?? 0
+        WidgetStore.publishTraffic(upload: up, download: down)
+        trafficTicks += 1
+        if trafficTicks % 10 == 1 {
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+    }
+
     private func teardownCore() {
+        stopTrafficPublishing()
         if tunnelRunning {
             CoreBridge.stopTunnel()
             tunnelRunning = false

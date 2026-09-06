@@ -17,6 +17,7 @@ struct ToggleTunnelIntent: AppIntent {
             WidgetStore.publish(
                 running: running,
                 profileName: previous.profileName,
+                proxyName: previous.proxyName,
                 mode: previous.mode
             )
             WidgetCenter.shared.reloadAllTimelines()

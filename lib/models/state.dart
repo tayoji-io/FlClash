@@ -303,6 +303,7 @@ abstract class SharedState with _$SharedState {
     required String stopTip,
     required String startTip,
     required String currentProfileName,
+    required String currentProxyName,
     required String mode,
     required String stopText,
     required bool onlyStatisticsProxy,

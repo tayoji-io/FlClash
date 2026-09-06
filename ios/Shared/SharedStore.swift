@@ -48,6 +48,7 @@ struct TunnelSharedState: Decodable {
     var setupParams: SetupParams?
     var vpnOptions: VpnOptions?
     var currentProfileName: String?
+    var currentProxyName: String?
     var mode: String?
     var onlyStatisticsProxy: Bool?
 }

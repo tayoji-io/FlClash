@@ -201,6 +201,7 @@ public class ServicePlugin: NSObject, FlutterPlugin {
         WidgetStore.publish(
             running: running,
             profileName: shared?.currentProfileName ?? "FlClash",
+            proxyName: shared?.currentProxyName ?? "",
             mode: shared?.mode ?? "rule"
         )
         WidgetCenter.shared.reloadAllTimelines()
