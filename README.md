@@ -13,11 +13,13 @@
 A multi-platform proxy client based on ClashMeta, simple and easy to use, open-source and ad-free.
 
 on Desktop:
+
 <p style="text-align: center;">
     <img alt="desktop" src="snapshots/desktop.gif">
 </p>
 
 on Mobile:
+
 <p style="text-align: center;">
     <img alt="mobile" src="snapshots/mobile.gif">
 </p>
@@ -40,22 +42,22 @@ on Mobile:
 
 ⚠️ Make sure to install the following dependencies before using them
 
-   ```bash
-    sudo apt-get install libayatana-appindicator3-dev
-    sudo apt-get install libkeybinder-3.0-dev
-   ```
+```bash
+ sudo apt-get install libayatana-appindicator3-dev
+ sudo apt-get install libkeybinder-3.0-dev
+```
 
 ### Android
 
 Support the following actions
 
-   ```bash
-    com.follow.clash.action.START
-    
-    com.follow.clash.action.STOP
-    
-    com.follow.clash.action.TOGGLE
-   ```
+```bash
+ com.follow.clash.action.START
+
+ com.follow.clash.action.STOP
+
+ com.follow.clash.action.TOGGLE
+```
 
 ## Download
 
@@ -71,6 +73,7 @@ brew install --cask flclash
 ## Build
 
 1. Update submodules
+
    ```bash
    git submodule update --init --recursive
    ```
@@ -78,55 +81,58 @@ brew install --cask flclash
 2. Install `Flutter` and `Golang` environment
 
 3. Build Application
+   - android
+     1. Install `Android SDK`, `Android NDK`
 
-    - android
+     2. Set `ANDROID_NDK` environment variable
 
-        1. Install `Android SDK`, `Android NDK`
+     3. Run build script
 
-        2. Set `ANDROID_NDK` environment variable
+        ```bash
+        dart setup.dart android
+        ```
 
-        3. Run build script
+   - windows
+     1. Requires a Windows client
 
-           ```bash
-           dart setup.dart android
-           ```
+     2. Install `GCC`, `Inno Setup`
 
-    - windows
+     3. Run build script
 
-        1. Requires a Windows client
+        ```bash
+        dart setup.dart windows
+        ```
 
-        2. Install `GCC`, `Inno Setup`
+   - linux
+     1. Requires a Linux client
 
-        3. Run build script
+     2. Dependencies are auto-installed by setup script, or manually:
 
-           ```bash
-           dart setup.dart windows
-           ```
+        ```bash
+        sudo apt-get install -y libayatana-appindicator3-dev libkeybinder-3.0-dev
+        ```
 
-    - linux
+     3. Run build script
 
-        1. Requires a Linux client
+        ```bash
+        dart setup.dart linux
+        ```
 
-        2. Dependencies are auto-installed by setup script, or manually:
-           ```bash
-           sudo apt-get install -y libayatana-appindicator3-dev libkeybinder-3.0-dev
-           ```
+   - macOS
+     1. Requires a macOS client
 
-        3. Run build script
+     2. Run build script
 
-           ```bash
-           dart setup.dart linux
-           ```
+        ```bash
+        dart setup.dart macos
+        ```
 
-    - macOS
+   - ios
+     1. Run build script
 
-        1. Requires a macOS client
-
-        2. Run build script
-
-           ```bash
-           dart setup.dart macos
-           ```
+        ```bash
+        flutter build ios --release --dart-define=APP_ENV=stable
+        ```
 
 ## Star
 
