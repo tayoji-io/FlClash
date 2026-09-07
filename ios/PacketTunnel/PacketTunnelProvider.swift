@@ -10,7 +10,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private static let ipv4Dns = "172.19.0.2"
     private static let ipv6Dns = "fdfe:dcba:9876::2"
     private static let anyIpv4 = "0.0.0.0"
-    private static let tunStack = "gvisor"
     private static let memoryLimitRatio = 0.7
     private static let eventBufferLimit = 512
 
@@ -199,7 +198,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let started = CoreBridge.startTunnel(
             fd: fd,
             interface: self,
-            stack: Self.tunStack,
+            stack: options.stack,
             address: address,
             dns: dns,
             mtu: Int32(options.mtu)

@@ -11,6 +11,7 @@ import (
 	"github.com/metacubex/mihomo/tunnel"
 	"net"
 	"net/netip"
+	"runtime"
 	"strings"
 )
 
@@ -22,6 +23,9 @@ func Start(fd int, stack string, address, dns string, mtu int) *sing_tun.Listene
 	tunStack, ok := constant.StackTypeMapping[strings.ToLower(stack)]
 	if !ok {
 		tunStack = constant.TunSystem
+	}
+	if runtime.GOOS == "ios" {
+		tunStack = constant.TunGvisor
 	}
 	if mtu <= 0 {
 		mtu = defaultMTU
