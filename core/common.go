@@ -211,6 +211,7 @@ func updateConfig(params *UpdateParams) {
 	if params.Mode != nil {
 		general.Mode = *params.Mode
 		tunnel.SetMode(general.Mode)
+		log.Infoln("[Config] mode: %s", general.Mode.String())
 	}
 	if params.LogLevel != nil {
 		general.LogLevel = *params.LogLevel
