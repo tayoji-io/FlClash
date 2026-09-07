@@ -173,7 +173,7 @@ class _EditProfileViewState extends State<EditProfileView> {
   Future<void> _uploadProfileFile() async {
     final platformFile = await globalState.safeRun(picker.pickerFile);
     if (platformFile == null) return;
-    _fileData = await platformFile.readBytes();
+    _fileData = await platformFile.readAsBytes();
     if (!mounted) {
       return;
     }
