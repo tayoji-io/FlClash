@@ -96,6 +96,9 @@ class _AppStateManagerState extends ConsumerState<AppStateManager>
     }
     if (state == AppLifecycleState.resumed && system.isIOS) {
       await _syncWidgetMode();
+      await globalState.container
+          .read(setupActionProvider.notifier)
+          .syncRunningState();
     }
   }
 

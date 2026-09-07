@@ -73,6 +73,14 @@ class SetupAction extends _$SetupAction {
     _startTime = await service?.getRunTime();
   }
 
+  Future<void> syncRunningState() async {
+    if (!system.isMobile) return;
+    final wasRunning = _startTime != null;
+    await _updateStartTime();
+    if (wasRunning == (_startTime != null)) return;
+    _setLocalRunning(_startTime != null);
+  }
+
   Future<void> initStatus() async {
     if (!globalState.needInitStatus) {
       commonPrint.log('init status cancel');
