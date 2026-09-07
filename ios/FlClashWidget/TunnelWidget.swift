@@ -18,6 +18,16 @@ struct TunnelProvider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<TunnelEntry>) -> Void) {
         Task {
             var snapshot = WidgetStore.read()
+            let running = await TunnelBridge.isRunning()
+            if running != snapshot.running {
+                snapshot.running = running
+                WidgetStore.publish(
+                    running: running,
+                    profileName: snapshot.profileName,
+                    proxyName: snapshot.proxyName,
+                    mode: snapshot.mode
+                )
+            }
             if snapshot.running,
                let live = await TunnelBridge.liveTotalTraffic(onlyStatisticsProxy: false) {
                 snapshot.uploadTotal = live.0
@@ -56,14 +66,16 @@ enum TunnelMode: String, CaseIterable {
 struct ModeLabel: View {
     let mode: TunnelMode
     let isCurrent: Bool
+    var vertical = false
 
     var body: some View {
         Text(mode.label)
-            .font(.caption2)
+            .font(vertical ? .caption : .caption2)
             .fontWeight(isCurrent ? .semibold : .regular)
             .foregroundStyle(isCurrent ? Color.primary : Color.secondary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 7)
+            .frame(maxWidth: vertical ? nil : .infinity)
+            .padding(.vertical, vertical ? 5 : 7)
+            .padding(.horizontal, vertical ? 12 : 0)
             .background(
                 Group {
                     if isCurrent {
@@ -78,32 +90,44 @@ struct ModeLabel: View {
 
 struct ModeRow: View {
     let current: String
-    let canSwitchInPlace: Bool
+    var vertical = false
 
     var body: some View {
-        HStack(spacing: 2) {
-            ForEach(TunnelMode.allCases, id: \.rawValue) { mode in
-                let label = ModeLabel(mode: mode, isCurrent: mode.rawValue == current)
-                if canSwitchInPlace, #available(iOS 17.0, *) {
-                    Button(intent: SetModeIntent(mode: mode.rawValue)) { label }
-                        .buttonStyle(.plain)
-                } else {
-                    Link(destination: mode.url) { label }
-                }
+        if vertical {
+            VStack(alignment: .leading, spacing: 2) { items }
+        } else {
+            HStack(spacing: 2) { items }
+                .padding(2)
+                .background(Capsule().fill(Color.secondary.opacity(0.15)))
+        }
+    }
+
+    @ViewBuilder
+    private var items: some View {
+        ForEach(TunnelMode.allCases, id: \.rawValue) { mode in
+            let label = ModeLabel(
+                mode: mode,
+                isCurrent: mode.rawValue == current,
+                vertical: vertical
+            )
+            if #available(iOS 17.0, *) {
+                Button(intent: SetModeIntent(mode: mode.rawValue)) { label }
+                    .buttonStyle(.plain)
+            } else {
+                Link(destination: mode.url) { label }
             }
         }
-        .padding(2)
-        .background(Capsule().fill(Color.secondary.opacity(0.15)))
     }
 }
 
 struct TunnelToggle: View {
     let running: Bool
+    var width: CGFloat?
 
     var body: some View {
         Capsule()
             .fill(running ? Color.green : Color.secondary.opacity(0.35))
-            .frame(width: 52)
+            .frame(maxWidth: width ?? .infinity)
             .frame(maxHeight: .infinity)
             .overlay {
                 GeometryReader { geometry in
@@ -177,28 +201,44 @@ struct TunnelWidgetView: View {
             .font(.caption2.weight(.semibold))
             .foregroundStyle(.secondary)
             Spacer(minLength: 0)
-            TrafficRow(
-                upload: entry.snapshot.uploadTotal,
-                download: entry.snapshot.downloadTotal
-            )
-            Spacer(minLength: 0)
-            HStack(spacing: 8) {
-                ModeRow(
-                    current: entry.snapshot.mode,
-                    canSwitchInPlace: entry.snapshot.running
-                )
-                if #available(iOS 17.0, *) {
-                    Button(intent: ToggleTunnelIntent()) {
-                        TunnelToggle(running: entry.snapshot.running)
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    TunnelToggle(running: entry.snapshot.running)
+            if isCompact {
+                HStack(alignment: .bottom, spacing: 8) {
+                    modeRow
+                    Spacer(minLength: 0)
+                    toggleButton.frame(height: 28)
                 }
+            } else {
+                TrafficRow(
+                    upload: entry.snapshot.uploadTotal,
+                    download: entry.snapshot.downloadTotal
+                )
+                Spacer(minLength: 0)
+                HStack(spacing: 8) {
+                    modeRow
+                    toggleButton
+                }
+                .fixedSize(horizontal: false, vertical: true)
             }
-            .fixedSize(horizontal: false, vertical: true)
         }
         .containerBackgroundIfAvailable()
+    }
+
+    private var modeRow: ModeRow {
+        ModeRow(current: entry.snapshot.mode, vertical: isCompact)
+    }
+
+    @ViewBuilder
+    private var toggleButton: some View {
+        let toggle = TunnelToggle(
+            running: entry.snapshot.running,
+            width: isCompact ? 48 : 52
+        )
+        if #available(iOS 17.0, *) {
+            Button(intent: ToggleTunnelIntent()) { toggle }
+                .buttonStyle(.plain)
+        } else {
+            toggle
+        }
     }
 }
 

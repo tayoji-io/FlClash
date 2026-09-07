@@ -18,7 +18,9 @@ struct SetModeIntent: AppIntent {
     }
 
     func perform() async throws -> some IntentResult {
-        try await TunnelBridge.setMode(mode)
+        if await TunnelBridge.isRunning() {
+            try await TunnelBridge.setMode(mode)
+        }
         let previous = WidgetStore.read()
         WidgetStore.publish(
             running: previous.running,
