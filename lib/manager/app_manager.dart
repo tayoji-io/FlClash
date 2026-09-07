@@ -103,7 +103,7 @@ class _AppStateManagerState extends ConsumerState<AppStateManager>
   }
 
   Future<void> _syncWidgetMode() async {
-    final value = await ios?.readWidgetMode() ?? '';
+    final value = await ios?.takeWidgetMode() ?? '';
     if (value.isEmpty) return;
     final ref = globalState.container;
     final index = Mode.values.indexWhere((item) => item.name == value);

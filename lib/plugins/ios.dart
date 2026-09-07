@@ -34,8 +34,8 @@ class Ios {
     return next.future;
   }
 
-  Future<String> readWidgetMode() async {
-    return await methodChannel.invokeMethod<String>('readWidgetMode') ?? '';
+  Future<String> takeWidgetMode() async {
+    return await methodChannel.invokeMethod<String>('takeWidgetMode') ?? '';
   }
 
   Future<bool> openAppSettings() async {

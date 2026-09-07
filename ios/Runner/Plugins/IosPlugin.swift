@@ -15,8 +15,8 @@ public class IosPlugin: NSObject, FlutterPlugin {
         switch call.method {
         case "getHomeDir":
             result(CoreIdentifiers.sharedContainerURL.path)
-        case "readWidgetMode":
-            result(WidgetStore.read().mode)
+        case "takeWidgetMode":
+            result(WidgetStore.takeRequestedMode())
         case "openAppSettings":
             openAppSettings(result: result)
         default:

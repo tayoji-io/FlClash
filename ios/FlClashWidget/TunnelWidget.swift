@@ -58,6 +58,10 @@ enum TunnelMode: String, CaseIterable {
         }
     }
 
+    var proxyName: String {
+        self == .direct ? "DIRECT" : ""
+    }
+
     var url: URL {
         CoreIdentifiers.modeURL(rawValue)
     }
@@ -183,14 +187,10 @@ struct TunnelWidgetView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(
-                entry.snapshot.proxyName.isEmpty
-                    ? entry.snapshot.profileName
-                    : entry.snapshot.proxyName
-            )
-            .font(.system(size: isCompact ? 15 : 17, weight: .bold))
-            .lineLimit(1)
-            .minimumScaleFactor(0.8)
+            Text(title)
+                .font(.system(size: isCompact ? 15 : 17, weight: .bold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
             HStack(spacing: 4) {
                 Text(entry.snapshot.profileName)
                     .lineLimit(1)
@@ -221,6 +221,15 @@ struct TunnelWidgetView: View {
             }
         }
         .containerBackgroundIfAvailable()
+    }
+
+    private var title: String {
+        if entry.snapshot.mode == TunnelMode.direct.rawValue {
+            return TunnelMode.direct.proxyName
+        }
+        return entry.snapshot.proxyName.isEmpty
+            ? entry.snapshot.profileName
+            : entry.snapshot.proxyName
     }
 
     private var modeRow: ModeRow {

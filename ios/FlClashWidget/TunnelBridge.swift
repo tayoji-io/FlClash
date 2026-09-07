@@ -3,14 +3,14 @@ import NetworkExtension
 
 enum TunnelBridgeError: LocalizedError {
     case notInstalled
-    case notConnected
+    case remote(String)
 
     var errorDescription: String? {
         switch self {
         case .notInstalled:
             return "The FlClash VPN configuration is not installed"
-        case .notConnected:
-            return "The FlClash tunnel is not running"
+        case let .remote(message):
+            return message
         }
     }
 }
@@ -65,11 +65,34 @@ enum TunnelBridge {
         return (up, down)
     }
 
-    static func setMode(_ mode: String) async throws {
-        let manager = try await manager()
-        guard let session = manager.connection as? NETunnelProviderSession,
-              session.status == .connected
-        else { throw TunnelBridgeError.notConnected }
+    private static func name(of status: NEVPNStatus) -> String {
+        switch status {
+        case .invalid: return "invalid"
+        case .disconnected: return "disconnected"
+        case .connecting: return "connecting"
+        case .connected: return "connected"
+        case .reasserting: return "reasserting"
+        case .disconnecting: return "disconnecting"
+        @unknown default: return "unknown(\(status.rawValue))"
+        }
+    }
+
+    @discardableResult
+    static func setMode(_ mode: String) async throws -> Bool {
+        guard let manager = try? await manager() else { return false }
+        guard let session = manager.connection as? NETunnelProviderSession else {
+            throw TunnelBridgeError.remote("The tunnel session is unavailable")
+        }
+        switch session.status {
+        case .connected:
+            break
+        case .disconnected, .invalid:
+            return false
+        default:
+            throw TunnelBridgeError.remote(
+                "The tunnel is \(Self.name(of: session.status)); mode was not sent"
+            )
+        }
         let call: [String: Any] = [
             "id": UUID().uuidString,
             "method": "updateConfig",
@@ -77,16 +100,32 @@ enum TunnelBridge {
         ]
         let payload = try JSONSerialization.data(withJSONObject: call)
         guard let text = String(data: payload, encoding: .utf8) else {
-            throw TunnelBridgeError.notConnected
+            throw TunnelBridgeError.remote("Could not encode the mode request")
         }
         let request = try TunnelCoding.encode(TunnelRequest.invoke(payload: text))
-        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+        let reply: Data? = await withCheckedContinuation { continuation in
             do {
-                try session.sendProviderMessage(request) { _ in c.resume() }
+                try session.sendProviderMessage(request) { continuation.resume(returning: $0) }
             } catch {
-                c.resume(throwing: error)
+                continuation.resume(returning: nil)
             }
         }
+        guard let reply else {
+            throw TunnelBridgeError.remote("The tunnel did not answer the mode request")
+        }
+        let response = try TunnelCoding.decode(TunnelResponse.self, from: reply)
+        if let error = response.error {
+            throw TunnelBridgeError.remote(error)
+        }
+        if let body = response.payload,
+           let data = body.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let failure = object["error"] as? [String: Any] {
+            throw TunnelBridgeError.remote(
+                failure["message"] as? String ?? "updateConfig was rejected"
+            )
+        }
+        return true
     }
 
     @discardableResult

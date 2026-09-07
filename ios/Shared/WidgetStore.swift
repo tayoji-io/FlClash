@@ -29,6 +29,7 @@ enum WidgetStore {
         static let uploadTotal = "flclash.widget.uploadTotal"
         static let downloadTotal = "flclash.widget.downloadTotal"
         static let updatedAt = "flclash.widget.updatedAt"
+        static let pendingMode = "flclash.widget.pendingMode"
     }
 
     private static var defaults: UserDefaults? {
@@ -47,6 +48,17 @@ enum WidgetStore {
         defaults.set(proxyName, forKey: Key.proxyName)
         defaults.set(mode, forKey: Key.mode)
         defaults.set(Date().timeIntervalSince1970, forKey: Key.updatedAt)
+    }
+
+    static func requestMode(_ mode: String) {
+        defaults?.set(mode, forKey: Key.pendingMode)
+    }
+
+    static func takeRequestedMode() -> String {
+        guard let defaults else { return "" }
+        let mode = defaults.string(forKey: Key.pendingMode) ?? ""
+        defaults.removeObject(forKey: Key.pendingMode)
+        return mode
     }
 
     static func publishTraffic(upload: Int64, download: Int64) {
