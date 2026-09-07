@@ -71,19 +71,6 @@ class Service {
     return CoreMethodResponse.fromJson(dataJson);
   }
 
-  void dispatchRawEvent(String data) {
-    try {
-      final methodCall = CoreMethodCall.fromJson(
-        Map<String, Object?>.from(json.decode(data) as Map),
-      );
-      for (final event in coreEventsFromData(methodCall.arguments)) {
-        for (final listener in _listeners) {
-          listener.onServiceEvent(event);
-        }
-      }
-    } catch (_) {}
-  }
-
   Future<bool> start() async {
     return await methodChannel.invokeMethod<bool>('start') ?? false;
   }

@@ -1,5 +1,4 @@
 import Foundation
-import NetworkExtension
 import os
 
 enum TunnelFileDescriptor {
@@ -8,37 +7,57 @@ enum TunnelFileDescriptor {
     private static let utunOptionInterfaceName: Int32 = 2
     private static let scanCeiling: Int32 = 8192
 
-    static func find(packetFlow: NEPacketTunnelFlow?) -> Int32? {
-        if let fd = fromPacketFlow(packetFlow) {
-            log.info("Tun descriptor \(fd, privacy: .public) resolved from packetFlow")
-            return fd
-        }
+    static func find(carrying address: String) -> Int32? {
+        let candidates = controlSockets(limit: descriptorLimit())
+        let owners = interfaces(carrying: address)
+        let summary = "tun descriptors="
+            + (candidates.isEmpty
+                ? "none"
+                : candidates.map { "\($0.fd):\($0.name)" }.joined(separator: ","))
+            + " \(address)="
+            + (owners.isEmpty ? "unassigned" : owners.joined(separator: ","))
 
-        let limit = descriptorLimit()
-        let candidates = controlSockets(limit: limit)
-        let summary = candidates.isEmpty
-            ? "none"
-            : candidates.map { "\($0.fd):\($0.name)" }.joined(separator: ",")
-
-        if let match = candidates.first(where: { $0.name.hasPrefix("utun") }) {
-            log.info(
-                "Tun descriptor \(match.fd, privacy: .public) named \(match.name, privacy: .public) resolved by scan; candidates=\(summary, privacy: .public)"
-            )
-            return match.fd
-        }
-
-        log.error(
-            "No utun descriptor in \(limit, privacy: .public) slots; candidates=\(summary, privacy: .public)"
-        )
-        return nil
-    }
-
-    private static func fromPacketFlow(_ flow: NEPacketTunnelFlow?) -> Int32? {
-        guard let value = flow?.value(forKeyPath: "socket.fileDescriptor") as? NSNumber else {
+        guard let match = candidates.first(where: { owners.contains($0.name) })
+            ?? candidates.first
+        else {
+            log.error("\(summary, privacy: .public)")
             return nil
         }
-        let fd = value.int32Value
-        return fd >= 0 ? fd : nil
+        log.info("\(summary, privacy: .public)")
+        return match.fd
+    }
+
+    private static func interfaces(carrying address: String) -> [String] {
+        var names: [String] = []
+        withInterfaces { entry in
+            guard let socketAddress = entry.pointee.ifa_addr,
+                  socketAddress.pointee.sa_family == UInt8(AF_INET)
+            else { return }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let resolved = getnameinfo(
+                socketAddress,
+                socklen_t(socketAddress.pointee.sa_len),
+                &host,
+                socklen_t(host.count),
+                nil,
+                0,
+                NI_NUMERICHOST
+            )
+            guard resolved == 0, String(cString: host) == address else { return }
+            names.append(String(cString: entry.pointee.ifa_name))
+        }
+        return names
+    }
+
+    private static func withInterfaces(_ body: (UnsafeMutablePointer<ifaddrs>) -> Void) {
+        var head: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&head) == 0, let head else { return }
+        defer { freeifaddrs(head) }
+        var cursor: UnsafeMutablePointer<ifaddrs>? = head
+        while let current = cursor {
+            body(current)
+            cursor = current.pointee.ifa_next
+        }
     }
 
     private static func controlSockets(limit: Int32) -> [(fd: Int32, name: String)] {

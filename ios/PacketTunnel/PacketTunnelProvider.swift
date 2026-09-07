@@ -10,6 +10,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private static let ipv4Dns = "172.19.0.2"
     private static let ipv6Dns = "fdfe:dcba:9876::2"
     private static let anyIpv4 = "0.0.0.0"
+    private static let tunStack = "gvisor"
     private static let memoryLimitRatio = 0.7
     private static let eventBufferLimit = 512
 
@@ -54,7 +55,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         CoreBridge.applyMemoryLimit(Self.memoryLimit())
         installEventListener()
-        startCoreLogging()
         CoreBridge.setup(initParams: initParams, setupParams: setupParams) { [weak self] message in
             guard let self else { return }
             if let message, !message.isEmpty {
@@ -184,7 +184,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         with options: TunnelSharedState.VpnOptions,
         completionHandler: @escaping (Error?) -> Void
     ) {
-        guard let fd = TunnelFileDescriptor.find(packetFlow: packetFlow) else {
+        guard let fd = TunnelFileDescriptor.find(carrying: Self.ipv4Address) else {
             teardownCore()
             completionHandler(TunnelError.tunDescriptorUnavailable)
             return
@@ -199,7 +199,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let started = CoreBridge.startTunnel(
             fd: fd,
             interface: self,
-            stack: options.stack,
+            stack: Self.tunStack,
             address: address,
             dns: dns,
             mtu: Int32(options.mtu)
@@ -268,17 +268,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     // MARK: - Events
 
-    private func startCoreLogging() {
-        let call: [String: Any] = [
-            "id": UUID().uuidString,
-            "method": "startLog",
-        ]
-        guard let data = try? JSONSerialization.data(withJSONObject: call),
-              let payload = String(data: data, encoding: .utf8)
-        else { return }
-        CoreBridge.invoke(payload) { _ in }
-    }
-
     private func installEventListener() {
         CoreBridge.updateEventListener { [weak self] message in
             guard let self, let message else { return }
@@ -287,9 +276,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func enqueue(event: String) {
-        if event.contains("\"log\"") {
-            TunnelLogStore.append(event)
-        }
         stateQueue.async {
             if let waiter = self.eventWaiter {
                 self.eventWaiter = nil

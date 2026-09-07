@@ -63,6 +63,7 @@ func Start(fd int, stack string, address, dns string, mtu int) *sing_tun.Listene
 		Inet6Address:        prefix6,
 		MTU:                 uint32(mtu),
 		FileDescriptor:      fd,
+		RecvMsgX:            true,
 	}
 
 	listener, err := sing_tun.New(options, tunnel.Tunnel)

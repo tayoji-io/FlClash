@@ -15,8 +15,6 @@ public class IosPlugin: NSObject, FlutterPlugin {
         switch call.method {
         case "getHomeDir":
             result(CoreIdentifiers.sharedContainerURL.path)
-        case "drainTunnelLog":
-            result(TunnelLogStore.drain())
         case "readWidgetMode":
             result(WidgetStore.read().mode)
         case "openAppSettings":

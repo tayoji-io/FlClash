@@ -5,7 +5,6 @@ import 'package:fl_clash/core/controller.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/manager/window_manager.dart';
 import 'package:fl_clash/plugins/ios.dart';
-import 'package:fl_clash/plugins/service.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
 import 'package:fl_clash/widgets/animated_visibility.dart';
@@ -97,14 +96,6 @@ class _AppStateManagerState extends ConsumerState<AppStateManager>
     }
     if (state == AppLifecycleState.resumed && system.isIOS) {
       await _syncWidgetMode();
-      await _drainTunnelLog();
-    }
-  }
-
-  Future<void> _drainTunnelLog() async {
-    final entries = await ios?.drainTunnelLog() ?? const <String>[];
-    for (final entry in entries) {
-      service?.dispatchRawEvent(entry);
     }
   }
 
