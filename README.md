@@ -131,7 +131,10 @@ brew install --cask flclash
      1. Run build script
 
         ```bash
-        flutter build ios --release --dart-define=APP_ENV=stable
+        flutter build ios --release --dart-define=APP_ENV=stable --no-codesign
+        rm -rf build/ios/Payload && mkdir -p build/ios/Payload
+        cp -R build/ios/iphoneos/Runner.app build/ios/Payload/
+        (cd build/ios && zip -qry FlClash-unsigned.ipa Payload)
         ```
 
 ## Star
