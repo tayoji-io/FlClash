@@ -19,6 +19,14 @@ enum SharedStore {
         get { defaults?.string(forKey: Key.sharedState) }
         set { defaults?.set(newValue, forKey: Key.sharedState) }
     }
+
+    static var onlyStatisticsProxy: Bool {
+        guard let json = sharedState,
+              let data = json.data(using: .utf8),
+              let state = try? JSONDecoder().decode(TunnelSharedState.self, from: data)
+        else { return false }
+        return state.onlyStatisticsProxy ?? false
+    }
 }
 
 struct TunnelSharedState: Decodable {

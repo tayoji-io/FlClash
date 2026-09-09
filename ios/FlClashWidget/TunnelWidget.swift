@@ -29,7 +29,9 @@ struct TunnelProvider: TimelineProvider {
                 )
             }
             if snapshot.running,
-               let live = await TunnelBridge.liveTotalTraffic(onlyStatisticsProxy: false) {
+               let live = await TunnelBridge.liveTotalTraffic(
+                   onlyStatisticsProxy: SharedStore.onlyStatisticsProxy
+               ) {
                 snapshot.uploadTotal = live.0
                 snapshot.downloadTotal = live.1
                 WidgetStore.publishTraffic(upload: live.0, download: live.1)
@@ -187,10 +189,14 @@ struct TunnelWidgetView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.system(size: isCompact ? 15 : 17, weight: .bold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(title)
+                    .font(.system(size: isCompact ? 15 : 17, weight: .bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Spacer(minLength: 0)
+                refreshButton
+            }
             HStack(spacing: 4) {
                 Text(entry.snapshot.profileName)
                     .lineLimit(1)
@@ -221,6 +227,19 @@ struct TunnelWidgetView: View {
             }
         }
         .containerBackgroundIfAvailable()
+    }
+
+    @ViewBuilder
+    private var refreshButton: some View {
+        if #available(iOS 17.0, *) {
+            Button(intent: RefreshIntent()) {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: isCompact ? 12 : 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     private var title: String {

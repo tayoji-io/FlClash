@@ -27,6 +27,7 @@
 		788C1656BA5CAFDBF98A8BAD /* PacketTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39E7DFF1101B4756B757CC95 /* PacketTunnelProvider.swift */; };
 		78A318202AECB46A00862997 /* FlutterGeneratedPluginSwiftPackage in Frameworks */ = {isa = PBXBuildFile; productRef = 78A3181F2AECB46A00862997 /* FlutterGeneratedPluginSwiftPackage */; };
 		795CAA0729848C4B9BF9C281 /* ToggleTunnelIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73B0C0BA9B0F96B22C6DF251 /* ToggleTunnelIntent.swift */; };
+		3F5A1C74B0D2E8916AC34D52 /* RefreshIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A47E2D9160B3C5F84E71D0A9 /* RefreshIntent.swift */; };
 		7C87D61D0A94C93EA7F89D88 /* SharedStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AB680CA1592ACA1FF74CE26 /* SharedStore.swift */; };
 		83090ACA532C5325261DD567 /* CoreIdentifiers.swift in Sources */ = {isa = PBXBuildFile; fileRef = B470240008ED5AE6C0D5F1A1 /* CoreIdentifiers.swift */; };
 		838C9CFE70D1DF4F08F52079 /* CoreBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 386800526FE904D6D4139392 /* CoreBridge.swift */; };
@@ -117,6 +118,7 @@
 		3C7281A0ACEF71F965825B9B /* TunnelBridge.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TunnelBridge.swift; sourceTree = "<group>"; };
 		4733769C4B885E9013928C94 /* TunnelFileDescriptor.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TunnelFileDescriptor.swift; sourceTree = "<group>"; };
 		73B0C0BA9B0F96B22C6DF251 /* ToggleTunnelIntent.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ToggleTunnelIntent.swift; sourceTree = "<group>"; };
+		A47E2D9160B3C5F84E71D0A9 /* RefreshIntent.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = RefreshIntent.swift; sourceTree = "<group>"; };
 		74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Runner-Bridging-Header.h"; sourceTree = "<group>"; };
 		74858FAE1ED2DC5600515810 /* AppDelegate.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		75B66147CF8630EF52FF80B3 /* Pods-RunnerTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.release.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.release.xcconfig"; sourceTree = "<group>"; };
@@ -315,6 +317,7 @@
 				AC001C308605FDF5EB423661 /* TunnelWidget.swift */,
 				B2BE70AC7995F2191D481D23 /* TunnelControl.swift */,
 				73B0C0BA9B0F96B22C6DF251 /* ToggleTunnelIntent.swift */,
+				A47E2D9160B3C5F84E71D0A9 /* RefreshIntent.swift */,
 				3C7281A0ACEF71F965825B9B /* TunnelBridge.swift */,
 				DE9742BE348BF548B6745227 /* Info.plist */,
 				7CEEC2BE175BA2882DA1BF60 /* FlClashWidget.entitlements */,
@@ -651,6 +654,7 @@
 				4F1626DC0523FDE20A2D183C /* TunnelWidget.swift in Sources */,
 				6DA868E46ED31FBC2DED4657 /* TunnelControl.swift in Sources */,
 				795CAA0729848C4B9BF9C281 /* ToggleTunnelIntent.swift in Sources */,
+				3F5A1C74B0D2E8916AC34D52 /* RefreshIntent.swift in Sources */,
 				FEC1C2BB604AECB0C8EF8898 /* TunnelBridge.swift in Sources */,
 				83090ACA532C5325261DD567 /* CoreIdentifiers.swift in Sources */,
 				E1324B0C12A30E323BF3A742 /* SharedStore.swift in Sources */,

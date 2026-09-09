@@ -12,6 +12,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private static let anyIpv4 = "0.0.0.0"
     private static let memoryLimitRatio = 0.7
     private static let eventBufferLimit = 512
+    private static let trafficInterval = 300
 
     private let log = Logger(subsystem: "com.follow.clash.ios", category: "tunnel")
     private let stateQueue = DispatchQueue(label: "com.follow.clash.ios.tunnel.state")
@@ -23,7 +24,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var startedAt: Date?
     private var tunnelRunning = false
     private var trafficTimer: DispatchSourceTimer?
-    private var trafficTicks = 0
     private var onlyStatisticsProxy = false
 
     override func startTunnel(
@@ -219,7 +219,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private func startTrafficPublishing() {
         stopTrafficPublishing()
         let timer = DispatchSource.makeTimerSource(queue: trafficQueue)
-        timer.schedule(deadline: .now(), repeating: .seconds(30))
+        timer.schedule(deadline: .now(), repeating: .seconds(Self.trafficInterval))
         timer.setEventHandler { [weak self] in
             self?.publishTraffic()
         }
@@ -230,7 +230,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private func stopTrafficPublishing() {
         trafficTimer?.cancel()
         trafficTimer = nil
-        trafficTicks = 0
     }
 
     private func publishTraffic() {
@@ -241,10 +240,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let up = (object["up"] as? NSNumber)?.int64Value ?? 0
         let down = (object["down"] as? NSNumber)?.int64Value ?? 0
         WidgetStore.publishTraffic(upload: up, download: down)
-        trafficTicks += 1
-        if trafficTicks % 10 == 1 {
-            WidgetCenter.shared.reloadAllTimelines()
-        }
+        WidgetCenter.shared.reloadAllTimelines()
     }
 
     private func teardownCore() {
