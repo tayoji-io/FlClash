@@ -127,15 +127,15 @@ final class FakeDesktopCoreTransport implements DesktopCoreTransport {
   }
 
   @override
-  Future<void> send(String message) async {
+  void send(List<int> frame) {
     if (state == DesktopTransportState.closed) {
       throw StateError('IPC transport is closed');
     }
     final error = sendError;
     if (error != null) {
-      throw error;
+      Error.throwWithStackTrace(error, StackTrace.current);
     }
-    sentMessages.add(message);
+    sentMessages.add(utf8.decode(frame));
   }
 
   @override
@@ -154,7 +154,7 @@ final class FakeDesktopCoreTransport implements DesktopCoreTransport {
     }
     final error = closeError;
     if (error != null) {
-      throw error;
+      Error.throwWithStackTrace(error, StackTrace.current);
     }
   }
 
@@ -225,7 +225,7 @@ final class FakeLauncher implements CoreProcessLauncher {
     await startGate?.future;
     final error = startError;
     if (error != null) {
-      throw error;
+      Error.throwWithStackTrace(error, StackTrace.current);
     }
     return lease;
   }

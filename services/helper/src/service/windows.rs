@@ -1,6 +1,8 @@
-use crate::service::hub::run_service_until;
+use crate::service::owner::{owner_sid_arguments, service_command, ServiceCommand};
+use crate::service::peer::{process_sid, serve_until};
 
 use anyhow::{bail, Context, Result};
+use once_cell::sync::OnceCell;
 use std::ffi::{OsStr, OsString};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -11,8 +13,10 @@ use tokio::sync::watch;
 use windows_service::{
     define_windows_service,
     service::{
-        Service, ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl,
-        ServiceExitCode, ServiceInfo, ServiceStartType, ServiceState, ServiceStatus, ServiceType,
+        Service, ServiceAccess, ServiceAction, ServiceActionType, ServiceControl,
+        ServiceControlAccept, ServiceErrorControl, ServiceExitCode, ServiceFailureActions,
+        ServiceFailureResetPeriod, ServiceInfo, ServiceStartType, ServiceState, ServiceStatus,
+        ServiceType,
     },
     service_control_handler::{self, ServiceControlHandlerResult},
     service_dispatcher,
@@ -23,6 +27,8 @@ const SERVICE_NAME: &str = "FlClashHelperService";
 const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 const SERVICE_OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
 const SERVICE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const SERVICE_RESTART_DELAY: Duration = Duration::from_secs(5);
+const SERVICE_FAILURE_RESET_PERIOD: Duration = Duration::from_secs(24 * 60 * 60);
 
 const ERROR_SERVICE_ALREADY_RUNNING: i32 = 1056;
 const ERROR_SERVICE_DOES_NOT_EXIST: i32 = 1060;
@@ -30,36 +36,18 @@ const ERROR_SERVICE_CANNOT_ACCEPT_CTRL: i32 = 1061;
 const ERROR_SERVICE_NOT_ACTIVE: i32 = 1062;
 const ERROR_SERVICE_MARKED_FOR_DELETE: i32 = 1072;
 
-#[derive(Debug, PartialEq, Eq)]
-enum ServiceCommand {
-    Run,
-    Install,
-    Uninstall,
-}
+static OWNER_SID: OnceCell<String> = OnceCell::new();
 
 pub fn main() -> Result<()> {
     match service_command(std::env::args_os().skip(1))? {
-        ServiceCommand::Run => start_service().map_err(Into::into),
-        ServiceCommand::Install => install_service(),
+        ServiceCommand::Run { owner_sid } => start_service(owner_sid).map_err(Into::into),
+        ServiceCommand::Install { owner_pid } => install_service(owner_pid),
         ServiceCommand::Uninstall => uninstall_service(),
     }
 }
 
-fn service_command(args: impl IntoIterator<Item = OsString>) -> Result<ServiceCommand> {
-    let mut args = args.into_iter();
-    let command = match args.next().as_deref() {
-        None => ServiceCommand::Run,
-        Some(value) if value == OsStr::new("install") => ServiceCommand::Install,
-        Some(value) if value == OsStr::new("uninstall") => ServiceCommand::Uninstall,
-        Some(value) => bail!("unknown helper command: {}", value.to_string_lossy()),
-    };
-    if args.next().is_some() {
-        bail!("helper accepts at most one command");
-    }
-    Ok(command)
-}
-
-fn start_service() -> windows_service::Result<()> {
+fn start_service(owner_sid: String) -> windows_service::Result<()> {
+    let _ = OWNER_SID.set(owner_sid);
     service_dispatcher::start(SERVICE_NAME, ffi_service_main)
 }
 
@@ -70,6 +58,10 @@ fn service_main(_arguments: Vec<OsString>) {
 }
 
 fn run_windows_service() -> Result<()> {
+    let owner_sid = OWNER_SID
+        .get()
+        .cloned()
+        .context("the helper service has no owner")?;
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let status_handle = service_control_handler::register(
         SERVICE_NAME,
@@ -112,7 +104,8 @@ fn run_windows_service() -> Result<()> {
 
     let shutdown_status_handle = status_handle;
     let running_status_handle = status_handle;
-    let service_result = runtime.block_on(run_service_until(
+    let service_result = runtime.block_on(serve_until(
+        owner_sid,
         async move {
             if !*shutdown_rx.borrow() {
                 let _ = shutdown_rx.changed().await;
@@ -151,7 +144,9 @@ fn run_windows_service() -> Result<()> {
     Ok(())
 }
 
-fn install_service() -> Result<()> {
+fn install_service(owner_pid: u32) -> Result<()> {
+    let owner_sid = process_sid(owner_pid)
+        .with_context(|| format!("read the account of process {owner_pid}"))?;
     let manager = ServiceManager::local_computer(
         None::<&str>,
         ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
@@ -167,7 +162,7 @@ fn install_service() -> Result<()> {
         start_type: ServiceStartType::AutoStart,
         error_control: ServiceErrorControl::Normal,
         executable_path,
-        launch_arguments: Vec::new(),
+        launch_arguments: owner_sid_arguments(&owner_sid),
         dependencies: Vec::new(),
         account_name: None,
         account_password: None,
@@ -175,15 +170,32 @@ fn install_service() -> Result<()> {
     let service = manager
         .create_service(
             &service_info,
-            ServiceAccess::QUERY_STATUS | ServiceAccess::START,
+            ServiceAccess::QUERY_STATUS | ServiceAccess::START | ServiceAccess::CHANGE_CONFIG,
         )
         .context("create helper service")?;
+    service
+        .update_failure_actions(crash_recovery())
+        .context("configure helper service recovery")?;
     if let Err(error) = service.start::<&OsStr>(&[]) {
         if !has_error_code(&error, ERROR_SERVICE_ALREADY_RUNNING) {
             return Err(error).context("start helper service");
         }
     }
     wait_for_running(&service)
+}
+
+/// The SCM side of the Linux unit's `Restart=on-failure`; a clean stop stays stopped.
+fn crash_recovery() -> ServiceFailureActions {
+    let restart = ServiceAction {
+        action_type: ServiceActionType::Restart,
+        delay: SERVICE_RESTART_DELAY,
+    };
+    ServiceFailureActions {
+        reset_period: ServiceFailureResetPeriod::After(SERVICE_FAILURE_RESET_PERIOD),
+        reboot_msg: None,
+        command: None,
+        actions: Some(vec![restart.clone(), restart.clone(), restart]),
+    }
 }
 
 fn uninstall_service() -> Result<()> {
@@ -298,31 +310,5 @@ fn service_status(
         checkpoint,
         wait_hint,
         process_id: None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_service_commands() {
-        assert_eq!(service_command([]).unwrap(), ServiceCommand::Run);
-        assert_eq!(
-            service_command([OsString::from("install")]).unwrap(),
-            ServiceCommand::Install
-        );
-        assert_eq!(
-            service_command([OsString::from("uninstall")]).unwrap(),
-            ServiceCommand::Uninstall
-        );
-    }
-
-    #[test]
-    fn rejects_unknown_or_extra_service_commands() {
-        assert!(service_command([OsString::from("unknown")]).is_err());
-        assert!(
-            service_command([OsString::from("install"), OsString::from("unexpected")]).is_err()
-        );
     }
 }

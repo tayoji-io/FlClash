@@ -4,8 +4,14 @@ import NetworkExtension
 import WidgetKit
 
 public class ServicePlugin: NSObject, FlutterPlugin {
+    private static let serviceChannelName = "com.follow.clash/service"
+    private static let coreChannelName = "com.follow.clash/core"
+
     private static let runtimeMethods: Set<String> = [
         "asyncTestDelay",
+        "probe",
+        "outboundIp",
+        "serviceCheck",
         "getTraffic",
         "getTotalTraffic",
         "resetTraffic",
@@ -13,7 +19,7 @@ public class ServicePlugin: NSObject, FlutterPlugin {
         "closeConnections",
         "resetConnections",
         "closeConnection",
-        "getMemory",
+        "getMemoryStats",
         "startLog",
         "stopLog",
     ]
@@ -31,29 +37,40 @@ public class ServicePlugin: NSObject, FlutterPlugin {
         "sideLoadExternalProvider",
         "updateExternalProvider",
         "clearEffect",
+        "clearDnsCache",
         "forceGc",
         "updateDns",
+        "watchRoute",
+        "checkRoutes",
     ]
 
     private static let eventPollTimeoutMilliseconds = 1000
 
-    private let channel: FlutterMethodChannel
+    private let serviceChannel: FlutterMethodChannel
+    private let coreChannel: FlutterMethodChannel
     private var eventPollTask: Task<Void, Never>?
     private var statusObserver: NSObjectProtocol?
     private var logRequested = false
+    private var commandRevision = 0
+    private var startRequested = false
+    private var previousStatus: NEVPNStatus = .invalid
 
-    init(channel: FlutterMethodChannel) {
-        self.channel = channel
+    init(messenger: FlutterBinaryMessenger) {
+        serviceChannel = FlutterMethodChannel(
+            name: Self.serviceChannelName,
+            binaryMessenger: messenger
+        )
+        coreChannel = FlutterMethodChannel(
+            name: Self.coreChannelName,
+            binaryMessenger: messenger
+        )
         super.init()
     }
 
     public static func register(with registrar: FlutterPluginRegistrar) {
-        let channel = FlutterMethodChannel(
-            name: "com.follow.clash/service",
-            binaryMessenger: registrar.messenger()
-        )
-        let instance = ServicePlugin(channel: channel)
-        registrar.addMethodCallDelegate(instance, channel: channel)
+        let instance = ServicePlugin(messenger: registrar.messenger())
+        registrar.addMethodCallDelegate(instance, channel: instance.serviceChannel)
+        instance.coreChannel.setMethodCallHandler(instance.handleCore)
         registrar.publish(instance)
     }
 
@@ -63,19 +80,25 @@ public class ServicePlugin: NSObject, FlutterPlugin {
             initialize(result: result)
         case "shutdown":
             shutdown(result: result)
-        case "invokeMethod":
-            invoke(call: call, result: result)
         case "getRunTime":
             runTime(result: result)
         case "syncState":
             syncState(call: call, result: result)
         case "start":
-            start(result: result)
+            start(call: call, result: result)
         case "stop":
-            stop(result: result)
+            stop(call: call, result: result)
         default:
             result(FlutterMethodNotImplemented)
         }
+    }
+
+    public func handleCore(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard call.method == "invokeMethod" else {
+            result(FlutterMethodNotImplemented)
+            return
+        }
+        invoke(call: call, result: result)
     }
 
     public func detachFromEngine(for registrar: FlutterPluginRegistrar) {
@@ -84,36 +107,43 @@ public class ServicePlugin: NSObject, FlutterPlugin {
 
     private func initialize(result: @escaping FlutterResult) {
         CoreBridge.updateEventListener { [weak self] message in
-            self?.send(event: message)
+            guard let self, let message else { return }
+            self.send(event: message)
         }
         observeTunnelStatus()
         Task {
             _ = try? await TunnelManager.shared.load()
+            self.refreshEventPolling()
+            self.handleTunnelStatus()
             await MainActor.run { result("") }
         }
     }
 
     private func shutdown(result: @escaping FlutterResult) {
         teardown()
-        Task {
-            await TunnelManager.shared.stop()
-            await MainActor.run { result(true) }
-        }
+        result(true)
     }
 
-    private func start(result: @escaping FlutterResult) {
+    private func start(call: FlutterMethodCall, result: @escaping FlutterResult) {
+        commandRevision = call.arguments as? Int ?? commandRevision
+        startRequested = true
         Task {
             do {
                 try await TunnelManager.shared.start()
                 await MainActor.run { result(true) }
             } catch {
-                self.sendLog("tunnel start failed: \(error.localizedDescription)")
-                await MainActor.run { result(false) }
+                await MainActor.run {
+                    self.startRequested = false
+                    self.sendLog("tunnel start failed: \(error.localizedDescription)")
+                    result(false)
+                }
             }
         }
     }
 
-    private func stop(result: @escaping FlutterResult) {
+    private func stop(call: FlutterMethodCall, result: @escaping FlutterResult) {
+        commandRevision = call.arguments as? Int ?? commandRevision
+        startRequested = false
         Task {
             await TunnelManager.shared.stop()
             await MainActor.run { result(true) }
@@ -126,20 +156,16 @@ public class ServicePlugin: NSObject, FlutterPlugin {
             return
         }
         SharedStore.sharedState = payload
-        Task { self.publishWidgetState(await TunnelManager.shared.status) }
-        result("")
+        Task {
+            self.publishWidgetState(await TunnelManager.shared.status)
+            await MainActor.run { result("") }
+        }
     }
 
     private func runTime(result: @escaping FlutterResult) {
         Task {
-            let milliseconds: Int64
-            do {
-                let response = try await TunnelManager.shared.send(.runTime)
-                milliseconds = response.runTimeMilliseconds ?? 0
-            } catch {
-                milliseconds = 0
-            }
-            await MainActor.run { result(milliseconds) }
+            let response = try? await TunnelManager.shared.send(.runTime)
+            await MainActor.run { result(response?.runTimeMilliseconds ?? 0) }
         }
     }
 
@@ -167,19 +193,31 @@ public class ServicePlugin: NSObject, FlutterPlugin {
 
         if let method, Self.tunnelOnlyMethods.contains(method) {
             Task {
-                _ = try? await TunnelManager.shared.send(.invoke(payload: payload))
-                let response = Self.localResponse(for: payload, result: true)
-                await MainActor.run { result(response) }
+                do {
+                    _ = try await TunnelManager.shared.send(.invoke(payload: payload))
+                    let response = Self.localResponse(for: payload, result: true)
+                    await MainActor.run { result(Self.data(response)) }
+                } catch {
+                    await MainActor.run { result(Self.data(nil)) }
+                }
             }
             return
         }
 
         if let method, Self.runtimeMethods.contains(method) {
             Task {
-                if let response = try? await TunnelManager.shared.send(.invoke(payload: payload)),
-                   let remote = response.payload {
-                    await MainActor.run { result(remote) }
-                    return
+                let connected = await TunnelManager.shared.isConnected
+                if self.startRequested && !connected {
+                    _ = await TunnelManager.shared.waitUntilConnected(timeout: 8)
+                }
+                do {
+                    let response = try await TunnelManager.shared.send(.invoke(payload: payload))
+                    if let remote = response.payload {
+                        await MainActor.run { result(Self.data(remote)) }
+                        return
+                    }
+                } catch {
+                    self.sendLog("\(method) tunnel call failed: \(error.localizedDescription)")
                 }
                 self.invokeLocal(payload, result: result)
             }
@@ -197,8 +235,13 @@ public class ServicePlugin: NSObject, FlutterPlugin {
 
     private func invokeLocal(_ payload: String, result: @escaping FlutterResult) {
         CoreBridge.invoke(payload) { response in
-            DispatchQueue.main.async { result(response) }
+            DispatchQueue.main.async { result(Self.data(response)) }
         }
+    }
+
+    private static func data(_ response: String?) -> Any? {
+        guard let response, let bytes = response.data(using: .utf8) else { return nil }
+        return FlutterStandardTypedData(bytes: bytes)
     }
 
     private func publishWidgetState(_ status: NEVPNStatus) {
@@ -222,14 +265,17 @@ public class ServicePlugin: NSObject, FlutterPlugin {
 
     private func sendLog(_ message: String) {
         DispatchQueue.main.async { [weak self] in
-            self?.channel.invokeMethod("log", arguments: message)
+            self?.serviceChannel.invokeMethod("log", arguments: message)
         }
     }
 
-    private func send(event: String?) {
-        guard let event else { return }
+    private func send(event: String) {
+        guard let bytes = event.data(using: .utf8) else { return }
         DispatchQueue.main.async { [weak self] in
-            self?.channel.invokeMethod("event", arguments: event)
+            self?.serviceChannel.invokeMethod(
+                "event",
+                arguments: FlutterStandardTypedData(bytes: bytes)
+            )
         }
     }
 
@@ -240,22 +286,38 @@ public class ServicePlugin: NSObject, FlutterPlugin {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.refreshEventPolling()
-            self?.logTunnelStatus()
+            self?.handleTunnelStatus()
         }
-        refreshEventPolling()
-        logTunnelStatus()
     }
 
-    private func logTunnelStatus() {
+    private func handleTunnelStatus() {
         Task {
             let status = await TunnelManager.shared.status
             self.publishWidgetState(status)
+            self.refreshEventPolling()
             self.sendLog("tunnel status: \(Self.statusName(status))")
-            guard status == .disconnected || status == .invalid else { return }
-            if let message = await TunnelManager.shared.lastDisconnectError() {
-                self.sendLog("tunnel last disconnect error: \(message)")
+            let active = status == .connected
+                || status == .connecting
+                || status == .reasserting
+                || status == .disconnecting
+            if !active && self.previousStatus != .invalid && self.startRequested {
+                self.startRequested = false
+                let revision = self.commandRevision
+                DispatchQueue.main.async { [weak self] in
+                    self?.serviceChannel.invokeMethod("stopped", arguments: revision)
+                }
             }
+            if !active {
+                if let message = await TunnelManager.shared.lastDisconnectError() {
+                    self.sendLog("tunnel last disconnect error: \(message)")
+                }
+            }
+            if status == .connected && self.previousStatus != .connected {
+                DispatchQueue.main.async { [weak self] in
+                    self?.serviceChannel.invokeMethod("connected", arguments: nil)
+                }
+            }
+            self.previousStatus = status
         }
     }
 

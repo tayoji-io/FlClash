@@ -1,100 +1,167 @@
-package main
+package core
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 const (
 	messageBatchInterval = 16 * time.Millisecond
 	messageBatchSize     = 32
 	messageQueueSize     = 256
 	messagePriorityBurst = 8
+	messageEvictAttempts = 4
 )
 
 var (
+	stateMessageQueue    = make(chan Message, messageQueueSize)
 	priorityMessageQueue = make(chan Message, messageQueueSize)
 	bulkMessageQueue     = make(chan Message, messageQueueSize)
 )
 
 func init() {
-	go runMessageBatcher(priorityMessageQueue, bulkMessageQueue, sendMessageBatch)
+	go runMessageBatcher(stateMessageQueue, priorityMessageQueue, bulkMessageQueue, sendMessageBatch)
 }
 
-func sendMessage(message Message) {
-	queue := priorityMessageQueue
-	if message.Type == LogMessage || message.Type == RequestMessage {
-		queue = bulkMessageQueue
+type messageClass int
+
+const (
+	stateMessageClass messageClass = iota
+	priorityMessageClass
+	bulkMessageClass
+	// Shares the bulk queue but never evicts from it: a lookup burst would
+	// otherwise push out the request events the connection list is built from.
+	yieldingBulkMessageClass
+)
+
+func classOfMessage(message Message) messageClass {
+	switch message.Type {
+	case LoadedMessage, GeoUpdateMessage, RouteChangedMessage:
+		return stateMessageClass
+	case LogMessage, RequestMessage:
+		return bulkMessageClass
+	case DnsMessage, RequestTrafficMessage:
+		return yieldingBulkMessageClass
+	default:
+		return priorityMessageClass
 	}
-	enqueueLatest(queue, message)
 }
 
-func enqueueLatest(queue chan Message, message Message) {
-	select {
-	case queue <- message:
-		return
-	default:
+// Request and DNS events fire per connection and per query for as long as the
+// Android service runs, engine or not; unheard, they are not worth encoding.
+func sendMessage(messageType MessageType, data any) (queued bool) {
+	if !hasEventListener() {
+		return false
 	}
+	message := Message{Type: messageType, Data: data}
+	switch classOfMessage(message) {
+	case stateMessageClass:
+		return enqueueState(stateMessageQueue, message)
+	case bulkMessageClass:
+		return enqueueLatest(bulkMessageQueue, message)
+	case yieldingBulkMessageClass:
+		return enqueueState(bulkMessageQueue, message)
+	default:
+		return enqueueLatest(priorityMessageQueue, message)
+	}
+}
 
-	// Event delivery must never block the core. Each priority class evicts only
-	// its own oldest event, so log or request floods cannot displace state.
-	select {
-	case <-queue:
-	default:
-	}
+func enqueueState(queue chan Message, message Message) bool {
 	select {
 	case queue <- message:
+		return true
 	default:
+		return false
 	}
+}
+
+func enqueueLatest(queue chan Message, message Message) bool {
+	for attempt := 0; attempt < messageEvictAttempts; attempt++ {
+		select {
+		case queue <- message:
+			return true
+		default:
+		}
+
+		select {
+		case <-queue:
+		default:
+		}
+	}
+	return false
 }
 
 func runMessageBatcher(
+	stateMessages <-chan Message,
 	priorityMessages <-chan Message,
 	bulkMessages <-chan Message,
 	send func([]Message),
 ) {
-	ticker := time.NewTicker(messageBatchInterval)
-	defer ticker.Stop()
+	timer := time.NewTimer(messageBatchInterval)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	defer timer.Stop()
 
+	var deadline <-chan time.Time
 	batch := make([]Message, 0, messageBatchSize)
+
 	flush := func() {
 		if len(batch) == 0 {
 			return
 		}
-		current := append([]Message(nil), batch...)
-		batch = batch[:0]
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		deadline = nil
+		current := batch
+		batch = make([]Message, 0, messageBatchSize)
 		send(current)
 	}
-	appendMessage := func(message Message) {
+	// A closed queue is set to nil so it never wins a select again.
+	take := func(queue *<-chan Message, message Message, open bool) bool {
+		if !open {
+			*queue = nil
+			return false
+		}
+		if len(batch) == 0 {
+			timer.Reset(messageBatchInterval)
+			deadline = timer.C
+		}
 		batch = append(batch, message)
 		if len(batch) >= messageBatchSize {
 			flush()
 		}
+		return true
 	}
 
 	priorityBurst := 0
-	for priorityMessages != nil || bulkMessages != nil {
+	for stateMessages != nil || priorityMessages != nil || bulkMessages != nil {
+		select {
+		case message, open := <-stateMessages:
+			take(&stateMessages, message, open)
+			continue
+		default:
+		}
+
 		// Give bulk events one guaranteed opportunity after a bounded priority
 		// burst, while retaining priority preference under ordinary load.
 		if priorityBurst >= messagePriorityBurst && bulkMessages != nil {
+			priorityBurst = 0
 			select {
-			case message, ok := <-bulkMessages:
-				if !ok {
-					bulkMessages = nil
-				} else {
-					appendMessage(message)
-				}
-				priorityBurst = 0
+			case message, open := <-bulkMessages:
+				take(&bulkMessages, message, open)
 				continue
 			default:
-				priorityBurst = 0
 			}
 		}
 
-		// Prefer state-bearing events whenever both queues have work.
 		select {
-		case message, ok := <-priorityMessages:
-			if !ok {
-				priorityMessages = nil
-			} else {
-				appendMessage(message)
+		case message, open := <-priorityMessages:
+			if take(&priorityMessages, message, open) {
 				priorityBurst++
 			}
 			continue
@@ -102,23 +169,35 @@ func runMessageBatcher(
 		}
 
 		select {
-		case message, ok := <-priorityMessages:
-			if !ok {
-				priorityMessages = nil
-			} else {
-				appendMessage(message)
+		case message, open := <-stateMessages:
+			take(&stateMessages, message, open)
+		case message, open := <-priorityMessages:
+			if take(&priorityMessages, message, open) {
 				priorityBurst++
 			}
-		case message, ok := <-bulkMessages:
-			if !ok {
-				bulkMessages = nil
-			} else {
-				appendMessage(message)
-			}
+		case message, open := <-bulkMessages:
+			take(&bulkMessages, message, open)
 			priorityBurst = 0
-		case <-ticker.C:
+		case <-deadline:
 			flush()
 		}
 	}
 	flush()
+}
+
+type messageBatchCall struct {
+	Method    CoreMethod `json:"method"`
+	Arguments []Message  `json:"arguments"`
+}
+
+func sendMessageBatch(messages []Message) {
+	data, err := json.Marshal(messageBatchCall{
+		Method:    messageMethod,
+		Arguments: messages,
+	})
+	if err != nil {
+		logError("Message batch marshal error: %v", err)
+		return
+	}
+	deliverEvent(data)
 }

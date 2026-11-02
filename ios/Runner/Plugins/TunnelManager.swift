@@ -31,6 +31,17 @@ actor TunnelManager {
         return status == .connected
     }
 
+    func waitUntilConnected(timeout: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if isConnected {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return isConnected
+    }
+
     var status: NEVPNStatus {
         manager?.connection.status ?? .invalid
     }

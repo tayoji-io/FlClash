@@ -4,29 +4,60 @@ use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::fs::{File, OpenOptions};
-#[cfg(not(all(feature = "windows-service", target_os = "windows")))]
+#[cfg(all(
+    not(all(feature = "windows-service", target_os = "windows")),
+    not(target_os = "linux")
+))]
 use std::future::pending;
+#[cfg(not(any(
+    all(feature = "windows-service", target_os = "windows"),
+    target_os = "linux"
+)))]
 use std::future::Future;
 use std::io::{BufRead, Error, Read};
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use std::{io, thread};
 use warp::http::StatusCode;
 use warp::{Filter, Rejection, Reply};
 #[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+#[cfg(windows)]
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
 
+#[cfg(not(any(
+    all(feature = "windows-service", target_os = "windows"),
+    target_os = "linux"
+)))]
 const LISTEN_PORT: u16 = 47890;
+#[cfg(not(target_os = "linux"))]
 const CORE_PIPE_PREFIX: &str = r"\\.\pipe\FlClashCore_";
+#[cfg(target_os = "linux")]
+const CORE_SOCKET_PREFIX: &str = "/tmp/FlClashSocket_";
+#[cfg(target_os = "linux")]
+const CORE_SOCKET_SUFFIX: &str = ".sock";
 const PROTOCOL_VERSION_HEADER: &str = "x-flclash-helper-protocol";
+#[cfg(windows)]
+const PROTOCOL_VERSION: &str = "8";
+#[cfg(not(windows))]
 const PROTOCOL_VERSION: &str = "6";
 const EXPECTED_CORE_SHA256: &str = env!("CORE_SHA256");
 const LOG_CAPACITY: usize = 100;
+const MAX_REQUEST_BODY_BYTES: u64 = 4096;
 const CORE_EXIT_TIMEOUT: Duration = Duration::from_millis(1500);
+const CORE_GRACEFUL_EXIT_TIMEOUT: Duration = Duration::from_millis(3000);
 const CORE_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -68,28 +99,117 @@ struct StopResponse {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ErrorDetails {
+    os_error: i32,
+}
+
+#[derive(Serialize)]
 struct ErrorResponse {
     code: &'static str,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<ErrorDetails>,
 }
 
 struct ManagedCore {
     session_id: String,
     child: Child,
+    #[cfg(windows)]
+    _job: CoreJob,
 }
 
 impl ManagedCore {
+    fn adopt(session_id: String, child: Child) -> Result<Self, Error> {
+        #[cfg(windows)]
+        let job = CoreJob::bind(&child)?;
+        Ok(Self {
+            session_id,
+            child,
+            #[cfg(windows)]
+            _job: job,
+        })
+    }
+
     fn terminate(&mut self) -> Result<(), Error> {
+        if self.request_exit() && self.wait_for_exit(CORE_GRACEFUL_EXIT_TIMEOUT)? {
+            return Ok(());
+        }
         let _ = self.child.kill();
-        let deadline = Instant::now() + CORE_EXIT_TIMEOUT;
+        if self.wait_for_exit(CORE_EXIT_TIMEOUT)? {
+            return Ok(());
+        }
+        Err(Error::other("Core did not exit after termination"))
+    }
+
+    fn wait_for_exit(&mut self, timeout: Duration) -> Result<bool, Error> {
+        let deadline = Instant::now() + timeout;
         loop {
             if self.child.try_wait()?.is_some() {
-                return Ok(());
+                return Ok(true);
             }
             if Instant::now() >= deadline {
-                return Err(Error::other("Core did not exit after termination"));
+                return Ok(false);
             }
             thread::sleep(CORE_EXIT_POLL_INTERVAL);
+        }
+    }
+
+    /// Only the TUN device dies with the process; SIGTERM lets the Core remove
+    /// the policy routes sing-tun installed for it.
+    #[cfg(target_os = "linux")]
+    fn request_exit(&mut self) -> bool {
+        // SAFETY: the child is unreaped, so its pid cannot have been recycled.
+        unsafe { libc::kill(self.child.id() as libc::pid_t, libc::SIGTERM) == 0 }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn request_exit(&mut self) -> bool {
+        false
+    }
+}
+
+/// Windows has no cgroup to take the Core down with a crashed Helper, so the
+/// Core lives in a job that the kernel kills when the Helper's handle closes.
+#[cfg(windows)]
+struct CoreJob(HANDLE);
+
+#[cfg(windows)]
+impl CoreJob {
+    fn bind(child: &Child) -> Result<Self, Error> {
+        // SAFETY: plain kernel32 calls on handles this process owns; the job
+        // handle is closed by Drop and the process handle stays with `child`.
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job == 0 {
+                return Err(Error::last_os_error());
+            }
+            let job = Self(job);
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if SetInformationJobObject(
+                job.0,
+                JobObjectExtendedLimitInformation,
+                &limits as *const _ as *const _,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            ) == 0
+            {
+                return Err(Error::last_os_error());
+            }
+            if AssignProcessToJobObject(job.0, child.as_raw_handle() as HANDLE) == 0 {
+                return Err(Error::last_os_error());
+            }
+            Ok(job)
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for CoreJob {
+    fn drop(&mut self) {
+        // SAFETY: the handle came from CreateJobObjectW and is closed once.
+        unsafe {
+            CloseHandle(self.0);
         }
     }
 }
@@ -116,12 +236,34 @@ impl VerifiedCore {
     }
 
     fn spawn(&self, address: &str) -> Result<Child, Error> {
-        Command::new(&self.path)
+        let mut command = Command::new(&self.path);
+        command
             .current_dir(&self.directory)
             .stderr(Stdio::piped())
-            .arg(address)
-            .spawn()
+            .arg(address);
+        #[cfg(target_os = "linux")]
+        adopt_core_owner(&mut command)?;
+        command.spawn()
     }
+}
+
+/// The Core hands files back to its real UID only when that differs from its
+/// effective one, so the child needs a setuid Core's split credentials.
+#[cfg(target_os = "linux")]
+fn adopt_core_owner(command: &mut Command) -> Result<(), Error> {
+    use std::os::unix::process::CommandExt;
+
+    let (uid, gid) = super::linux::core_owner()?;
+    // SAFETY: async-signal-safe calls touching only this child, before exec.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::setresgid(gid, 0, 0) != 0 || libc::setresuid(uid, 0, 0) != 0 {
+                return Err(Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -173,11 +315,23 @@ fn open_verified_core(path: &Path, expected_sha256: &str) -> Result<File, Error>
     Ok(core_file)
 }
 
-fn is_allowed_core_pipe(address: &str) -> bool {
+#[cfg(not(target_os = "linux"))]
+fn is_allowed_core_address(address: &str) -> bool {
     let Some(suffix) = address.strip_prefix(CORE_PIPE_PREFIX) else {
         return false;
     };
     is_valid_session_id(suffix)
+}
+
+#[cfg(target_os = "linux")]
+fn is_allowed_core_address(address: &str) -> bool {
+    let Some(suffix) = address.strip_prefix(CORE_SOCKET_PREFIX) else {
+        return false;
+    };
+    let Some(digits) = suffix.strip_suffix(CORE_SOCKET_SUFFIX) else {
+        return false;
+    };
+    !digits.is_empty() && digits.len() <= 10 && digits.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn is_valid_session_id(value: &str) -> bool {
@@ -198,6 +352,42 @@ fn stop_decision(current: Option<&str>, requested: &str) -> StopDecision {
 static LOGS: Lazy<Mutex<VecDeque<String>>> =
     Lazy::new(|| Mutex::new(VecDeque::with_capacity(LOG_CAPACITY)));
 static MANAGED_CORE: Lazy<Mutex<Option<ManagedCore>>> = Lazy::new(|| Mutex::new(None));
+
+fn lock_surviving_poison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// A Core whose app went away exits on its own, and stays a zombie until it is
+/// waited on; without this nothing waits before the next start or stop.
+fn reap_exited_core(session_id: &str) {
+    let deadline = Instant::now() + CORE_EXIT_TIMEOUT;
+    loop {
+        {
+            let mut managed = lock_surviving_poison(&MANAGED_CORE);
+            let Some(core) = managed
+                .as_mut()
+                .filter(|core| core.session_id == session_id)
+            else {
+                return;
+            };
+            match core.child.try_wait() {
+                Ok(Some(status)) => {
+                    log_message(format!("Core exited on its own: {status}"));
+                    *managed = None;
+                    return;
+                }
+                Ok(None) => {}
+                Err(_) => return,
+            }
+        }
+        if Instant::now() >= deadline {
+            return;
+        }
+        thread::sleep(CORE_EXIT_POLL_INTERVAL);
+    }
+}
 
 fn release_managed_core(managed: &mut Option<ManagedCore>) -> Result<(), Error> {
     let Some(core) = managed.as_mut() else {
@@ -221,16 +411,32 @@ fn error_response(
         &ErrorResponse {
             code,
             message: message.into(),
+            details: None,
         },
         status,
     )
 }
 
+/// The OS error code is what lets the app tell a Core that Windows refused on
+/// policy grounds (Smart App Control, AppLocker) from one that is broken.
+fn launch_failure_response(error: &Error) -> warp::reply::Response {
+    json_response(
+        &ErrorResponse {
+            code: "processLaunchFailed",
+            message: error.to_string(),
+            details: error
+                .raw_os_error()
+                .map(|os_error| ErrorDetails { os_error }),
+        },
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
+}
+
 fn start(start_params: StartParams) -> warp::reply::Response {
-    if !is_allowed_core_pipe(&start_params.address) {
+    if !is_allowed_core_address(&start_params.address) {
         return error_response(
             "invalidRequest",
-            "invalid Core pipe address",
+            "invalid Core address",
             StatusCode::BAD_REQUEST,
         );
     }
@@ -241,8 +447,17 @@ fn start(start_params: StartParams) -> warp::reply::Response {
             StatusCode::BAD_REQUEST,
         );
     }
+    #[cfg(target_os = "linux")]
+    if let Err(error) = super::linux::ensure_owner_socket(&start_params.address) {
+        return error_response("invalidRequest", error.to_string(), StatusCode::BAD_REQUEST);
+    }
+    launch(start_params)
+}
 
-    let mut managed = MANAGED_CORE.lock().unwrap();
+/// Releases the managed Core before anything else, so a request reaching this
+/// point must already be accepted: a rejected one has to leave it running.
+fn launch(start_params: StartParams) -> warp::reply::Response {
+    let mut managed = lock_surviving_poison(&MANAGED_CORE);
     if let Err(error) = release_managed_core(&mut managed) {
         log_message(format!(
             "Helper could not release the managed Core: {error}"
@@ -269,6 +484,7 @@ fn start(start_params: StartParams) -> warp::reply::Response {
             let process_id = child.id();
             if let Some(stderr) = child.stderr.take() {
                 let reader = io::BufReader::new(stderr);
+                let session_id = start_params.session_id.clone();
                 thread::spawn(move || {
                     for line in reader.lines() {
                         match line {
@@ -280,12 +496,20 @@ fn start(start_params: StartParams) -> warp::reply::Response {
                             }
                         }
                     }
+                    reap_exited_core(&session_id);
                 });
             }
-            *managed = Some(ManagedCore {
-                session_id: start_params.session_id.clone(),
-                child,
-            });
+            *managed = match ManagedCore::adopt(start_params.session_id.clone(), child) {
+                Ok(core) => Some(core),
+                Err(error) => {
+                    log_message(format!("Helper could not confine the Core: {error}"));
+                    return error_response(
+                        "internalError",
+                        format!("Core confinement failed: {error}"),
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    );
+                }
+            };
             json_response(
                 &StartResponse {
                     session_id: start_params.session_id,
@@ -296,11 +520,7 @@ fn start(start_params: StartParams) -> warp::reply::Response {
         }
         Err(e) => {
             log_message(e.to_string());
-            error_response(
-                "processLaunchFailed",
-                e.to_string(),
-                StatusCode::INTERNAL_SERVER_ERROR,
-            )
+            launch_failure_response(&e)
         }
     }
 }
@@ -313,7 +533,7 @@ fn stop_core(stop_params: StopParams) -> warp::reply::Response {
             StatusCode::BAD_REQUEST,
         );
     }
-    let mut managed = MANAGED_CORE.lock().unwrap();
+    let mut managed = lock_surviving_poison(&MANAGED_CORE);
     match stop_decision(
         managed.as_ref().map(|core| core.session_id.as_str()),
         &stop_params.session_id,
@@ -355,8 +575,8 @@ fn stop_core(stop_params: StopParams) -> warp::reply::Response {
     }
 }
 
-fn log_message(message: String) {
-    let mut log_buffer = LOGS.lock().unwrap();
+pub(super) fn log_message(message: String) {
+    let mut log_buffer = lock_surviving_poison(&LOGS);
     while log_buffer.len() >= LOG_CAPACITY {
         log_buffer.pop_front();
     }
@@ -364,7 +584,7 @@ fn log_message(message: String) {
 }
 
 fn get_logs() -> impl Reply {
-    let log_buffer = LOGS.lock().unwrap();
+    let log_buffer = lock_surviving_poison(&LOGS);
     let value = log_buffer
         .iter()
         .cloned()
@@ -458,6 +678,18 @@ async fn ping_request(ping_params: PingParams) -> Result<warp::reply::Response, 
 }
 
 async fn handle_rejection(rejection: Rejection) -> Result<warp::reply::Response, Infallible> {
+    if rejection.find::<ForbiddenClient>().is_some() {
+        return Ok(warp::reply::with_header(
+            error_response(
+                "invalidRequest",
+                "browser origins and non-local hosts are not allowed",
+                StatusCode::FORBIDDEN,
+            ),
+            "connection",
+            "close",
+        )
+        .into_response());
+    }
     if rejection.find::<warp::reject::InvalidQuery>().is_some() {
         return Ok(warp::reply::with_header(
             error_response(
@@ -480,11 +712,44 @@ async fn handle_rejection(rejection: Rejection) -> Result<warp::reply::Response,
             StatusCode::BAD_REQUEST,
         ));
     }
+    if rejection.find::<warp::reject::PayloadTooLarge>().is_some() {
+        return Ok(warp::reply::with_header(
+            error_response(
+                "invalidRequest",
+                "request body exceeds 4096 bytes",
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+            "connection",
+            "close",
+        )
+        .into_response());
+    }
+    if rejection.find::<warp::reject::LengthRequired>().is_some() {
+        return Ok(error_response(
+            "invalidRequest",
+            "request body length is required",
+            StatusCode::LENGTH_REQUIRED,
+        ));
+    }
     if rejection.is_not_found() {
         return Ok(error_response(
             "notFound",
             "Helper endpoint not found",
             StatusCode::NOT_FOUND,
+        ));
+    }
+    if rejection.find::<warp::reject::InvalidHeader>().is_some() {
+        return Ok(error_response(
+            "invalidRequest",
+            "invalid request header",
+            StatusCode::BAD_REQUEST,
+        ));
+    }
+    if rejection.find::<warp::reject::MethodNotAllowed>().is_some() {
+        return Ok(error_response(
+            "invalidRequest",
+            "Helper endpoint does not accept this method",
+            StatusCode::METHOD_NOT_ALLOWED,
         ));
     }
     Ok(error_response(
@@ -494,62 +759,102 @@ async fn handle_rejection(rejection: Rejection) -> Result<warp::reply::Response,
     ))
 }
 
-fn routes() -> impl Filter<Extract = (impl Reply,), Error = Infallible> + Clone {
-    let api_ping = warp::get()
-        .and(warp::path("ping"))
+#[derive(Debug)]
+struct ForbiddenClient;
+
+impl warp::reject::Reject for ForbiddenClient {}
+
+pub(super) fn routes() -> impl Filter<Extract = (impl Reply,), Error = Infallible> + Clone {
+    let native_client = warp::header::optional::<String>("origin")
+        .and(warp::header::optional::<String>("host"))
+        .and_then(|origin: Option<String>, host: Option<String>| async move {
+            let local_host = host.is_none_or(|host| {
+                host.parse::<warp::http::uri::Authority>()
+                    .is_ok_and(|authority| {
+                        ["127.0.0.1", "localhost", "FlClashHelperService"]
+                            .iter()
+                            .any(|host| authority.host().eq_ignore_ascii_case(host))
+                    })
+            });
+            if origin.is_some() || !local_host {
+                return Err(warp::reject::custom(ForbiddenClient));
+            }
+            Ok(())
+        })
+        .untuple_one();
+    // Matching the path before the method keeps an unknown path rejecting as
+    // "not found" instead of the method mismatch another endpoint reports.
+    let api_ping = warp::path("ping")
         .and(warp::path::end())
+        .and(warp::get())
         .and(warp::query::<PingParams>())
         .and_then(ping_request);
 
-    let api_start = warp::post()
-        .and(warp::path("start"))
+    let api_start = warp::path("start")
         .and(warp::path::end())
+        .and(warp::post())
+        .and(warp::body::content_length_limit(MAX_REQUEST_BODY_BYTES))
         .and(warp::body::json())
         .and_then(start_request);
 
-    let api_stop = warp::post()
-        .and(warp::path("stop"))
+    let api_stop = warp::path("stop")
         .and(warp::path::end())
+        .and(warp::post())
+        .and(warp::body::content_length_limit(MAX_REQUEST_BODY_BYTES))
         .and(warp::body::json())
         .and_then(stop_request);
 
-    let api_logs = warp::get()
-        .and(warp::path("logs"))
+    let api_logs = warp::path("logs")
         .and(warp::path::end())
+        .and(warp::get())
         .map(get_logs);
 
-    api_ping
-        .or(api_start)
-        .or(api_stop)
-        .or(api_logs)
+    native_client
+        .and(api_ping.or(api_start).or(api_stop).or(api_logs))
         .recover(handle_rejection)
 }
 
-#[cfg(not(all(feature = "windows-service", target_os = "windows")))]
+pub(super) fn ensure_core_sha256_configured() -> anyhow::Result<()> {
+    if EXPECTED_CORE_SHA256.is_empty() {
+        anyhow::bail!("expected Core SHA256 is empty");
+    }
+    Ok(())
+}
+
+pub(super) fn release_managed_core_on_shutdown() {
+    let mut managed = lock_surviving_poison(&MANAGED_CORE);
+    if let Err(error) = release_managed_core(&mut managed) {
+        log_message(format!(
+            "Helper could not stop the managed Core on shutdown: {error}"
+        ));
+    }
+}
+
+#[cfg(all(
+    not(all(feature = "windows-service", target_os = "windows")),
+    not(target_os = "linux")
+))]
 pub async fn run_service() -> anyhow::Result<()> {
     run_service_until(pending(), || Ok(())).await
 }
 
-pub(super) async fn run_service_until<F, S>(shutdown: F, on_started: S) -> anyhow::Result<()>
+#[cfg(not(any(
+    all(feature = "windows-service", target_os = "windows"),
+    target_os = "linux"
+)))]
+async fn run_service_until<F, S>(shutdown: F, on_started: S) -> anyhow::Result<()>
 where
     F: Future<Output = ()> + Send + 'static,
     S: FnOnce() -> anyhow::Result<()>,
 {
-    if EXPECTED_CORE_SHA256.is_empty() {
-        anyhow::bail!("expected Core SHA256 is empty");
-    }
+    ensure_core_sha256_configured()?;
 
     let (_, server) = warp::serve(routes())
         .try_bind_with_graceful_shutdown(([127, 0, 0, 1], LISTEN_PORT), shutdown)
         .map_err(|error| anyhow::anyhow!("bind helper server: {error}"))?;
     on_started()?;
     server.await;
-    let mut managed = MANAGED_CORE.lock().unwrap();
-    if let Err(error) = release_managed_core(&mut managed) {
-        log_message(format!(
-            "Helper could not stop the managed Core on shutdown: {error}"
-        ));
-    }
+    release_managed_core_on_shutdown();
 
     Ok(())
 }
@@ -566,6 +871,11 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
     }
+
+    #[cfg(not(target_os = "linux"))]
+    const ALLOWED_CORE_ADDRESS: &str = r"\\.\pipe\FlClashCore_0123456789abcdef0123456789abcdef";
+    #[cfg(target_os = "linux")]
+    const ALLOWED_CORE_ADDRESS: &str = "/tmp/FlClashSocket_4821.sock";
 
     fn spawn_placeholder_core() -> Child {
         #[cfg(windows)]
@@ -604,15 +914,13 @@ mod tests {
     }
 
     fn adopt_core(session_id: &str) {
-        *MANAGED_CORE.lock().unwrap() = Some(ManagedCore {
-            session_id: session_id.to_string(),
-            child: spawn_running_core(),
-        });
+        *lock_surviving_poison(&MANAGED_CORE) =
+            Some(ManagedCore::adopt(session_id.to_string(), spawn_running_core()).unwrap());
     }
 
     #[test]
-    fn protocol_6_uses_lowercase_session_ownership() {
-        assert_eq!(PROTOCOL_VERSION, "6");
+    fn protocol_uses_lowercase_session_ownership() {
+        assert_eq!(PROTOCOL_VERSION, if cfg!(windows) { "8" } else { "6" });
         assert!(is_valid_session_id("0123456789abcdef0123456789abcdef"));
         assert!(!is_valid_session_id("ABCDEF0123456789abcdef0123456789"));
         assert!(!is_valid_session_id("0123456789abcdef"));
@@ -666,6 +974,28 @@ mod tests {
                 .unwrap(),
             "Core executable SHA256 mismatch"
         );
+    }
+
+    #[tokio::test]
+    async fn unknown_endpoints_are_not_found() {
+        let response = warp::test::request()
+            .method("GET")
+            .path("/nope")
+            .reply(&routes())
+            .await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn known_endpoints_reject_the_wrong_method() {
+        let response = warp::test::request()
+            .method("POST")
+            .path("/ping")
+            .reply(&routes())
+            .await;
+
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 
     #[tokio::test]
@@ -739,14 +1069,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_launch_failure_carries_the_os_error_code() {
+        let response = launch_failure_response(&Error::from_raw_os_error(577));
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body: serde_json::Value = serde_json::from_slice(
+            &warp::hyper::body::to_bytes(response.into_body())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["code"], "processLaunchFailed");
+        assert_eq!(body["details"]["osError"], 577);
+    }
+
+    #[tokio::test]
+    async fn a_launch_failure_without_an_os_error_omits_the_details() {
+        let response = launch_failure_response(&Error::other("spawn refused"));
+
+        let body: serde_json::Value = serde_json::from_slice(
+            &warp::hyper::body::to_bytes(response.into_body())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["message"], "spawn refused");
+        assert!(body.get("details").is_none());
+    }
+
+    #[tokio::test]
     async fn start_rejects_a_caller_supplied_core_argument() {
         let response = warp::test::request()
             .method("POST")
             .path("/start")
             .header("content-type", "application/json")
-            .body(
-                r#"{"address":"\\\\.\\pipe\\FlClashCore_0123456789abcdef0123456789abcdef","sessionId":"0123456789abcdef0123456789abcdef","path":"attacker.exe"}"#,
-            )
+            .body(format!(
+                r#"{{"address":{},"sessionId":"0123456789abcdef0123456789abcdef","path":"attacker.exe"}}"#,
+                serde_json::to_string(ALLOWED_CORE_ADDRESS).unwrap()
+            ))
             .reply(&routes())
             .await;
 
@@ -757,27 +1117,66 @@ mod tests {
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
-    async fn start_releases_the_managed_core_before_rejecting_an_unverified_core() {
+    async fn launch_releases_the_managed_core_before_rejecting_an_unverified_core() {
         let _state = lock_process_state();
-        *MANAGED_CORE.lock().unwrap() = Some(ManagedCore {
-            session_id: "fedcba9876543210fedcba9876543210".to_string(),
-            child: spawn_placeholder_core(),
+        *lock_surviving_poison(&MANAGED_CORE) = Some(
+            ManagedCore::adopt(
+                "fedcba9876543210fedcba9876543210".to_string(),
+                spawn_placeholder_core(),
+            )
+            .unwrap(),
+        );
+
+        let response = launch(StartParams {
+            address: ALLOWED_CORE_ADDRESS.to_string(),
+            session_id: "0123456789abcdef0123456789abcdef".to_string(),
         });
 
-        let response = warp::test::request()
-            .method("POST")
-            .path("/start")
-            .json(&StartParams {
-                address: r"\\.\pipe\FlClashCore_0123456789abcdef0123456789abcdef".to_string(),
-                session_id: "0123456789abcdef0123456789abcdef".to_string(),
-            })
-            .reply(&routes())
-            .await;
-
         assert_eq!(response.status(), StatusCode::CONFLICT);
-        let body: serde_json::Value = serde_json::from_slice(response.body()).unwrap();
+        assert!(lock_surviving_poison(&MANAGED_CORE).is_none());
+        let body: serde_json::Value = serde_json::from_slice(
+            &warp::hyper::body::to_bytes(response.into_body())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(body["code"], "coreVerificationFailed");
-        assert!(MANAGED_CORE.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_core_that_exits_on_its_own_is_reaped() {
+        let _state = lock_process_state();
+        let session_id = "0123456789abcdef0123456789abcdef";
+        *lock_surviving_poison(&MANAGED_CORE) =
+            Some(ManagedCore::adopt(session_id.to_string(), spawn_placeholder_core()).unwrap());
+
+        reap_exited_core(session_id);
+
+        assert!(lock_surviving_poison(&MANAGED_CORE).is_none());
+    }
+
+    #[test]
+    fn reaping_leaves_a_running_or_newer_core_owned() {
+        let _state = lock_process_state();
+        let session_id = "0123456789abcdef0123456789abcdef";
+        *lock_surviving_poison(&MANAGED_CORE) =
+            Some(ManagedCore::adopt(session_id.to_string(), spawn_placeholder_core()).unwrap());
+
+        reap_exited_core("fedcba9876543210fedcba9876543210");
+        assert!(lock_surviving_poison(&MANAGED_CORE).is_some());
+
+        adopt_core(session_id);
+        reap_exited_core(session_id);
+
+        let mut managed = lock_surviving_poison(&MANAGED_CORE);
+        assert!(managed
+            .as_mut()
+            .unwrap()
+            .child
+            .try_wait()
+            .unwrap()
+            .is_none());
+        release_managed_core(&mut managed).unwrap();
     }
 
     #[tokio::test]
@@ -800,7 +1199,7 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(response.body()).unwrap();
         assert_eq!(body["stopped"], true);
         assert!(body.get("reason").is_none());
-        assert!(MANAGED_CORE.lock().unwrap().is_none());
+        assert!(lock_surviving_poison(&MANAGED_CORE).is_none());
     }
 
     #[tokio::test]
@@ -822,19 +1221,96 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(response.body()).unwrap();
         assert_eq!(body["reason"], "sessionMismatch");
 
-        let mut managed = MANAGED_CORE.lock().unwrap();
+        let mut managed = lock_surviving_poison(&MANAGED_CORE);
         let core = managed.as_mut().expect("Core stays owned");
         assert_eq!(core.session_id, "fedcba9876543210fedcba9876543210");
         assert!(core.child.try_wait().unwrap().is_none());
         release_managed_core(&mut managed).unwrap();
     }
 
+    #[cfg(target_os = "linux")]
+    fn spawn_shell_core_once_ready(script: &str) -> Child {
+        let mut child = Command::new("sh")
+            .args(["-c", script])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn shell core");
+        let mut ready = String::new();
+        std::io::BufReader::new(child.stdout.take().expect("piped stdout"))
+            .read_line(&mut ready)
+            .expect("read readiness");
+        assert_eq!(ready, "ready\n");
+        child
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn terminate_lets_the_core_exit_on_its_own_before_killing_it() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let mut core = ManagedCore::adopt(
+            "0123456789abcdef0123456789abcdef".to_string(),
+            spawn_shell_core_once_ready(
+                "trap 'exit 0' TERM; echo ready; while :; do sleep 0.05; done",
+            ),
+        )
+        .unwrap();
+
+        core.terminate().unwrap();
+
+        let status = core.child.try_wait().unwrap().expect("Core exited");
+        assert_eq!(status.code(), Some(0));
+        assert_eq!(status.signal(), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn terminate_kills_a_core_that_ignores_the_exit_request() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let mut core = ManagedCore::adopt(
+            "0123456789abcdef0123456789abcdef".to_string(),
+            spawn_shell_core_once_ready("trap '' TERM; echo ready; exec sleep 30"),
+        )
+        .unwrap();
+
+        core.terminate().unwrap();
+
+        let status = core.child.try_wait().unwrap().expect("Core exited");
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn closing_the_job_takes_the_core_down_with_the_helper() {
+        let core = ManagedCore::adopt(
+            "0123456789abcdef0123456789abcdef".to_string(),
+            spawn_running_core(),
+        )
+        .unwrap();
+        let ManagedCore {
+            mut child, _job, ..
+        } = core;
+
+        drop(_job);
+
+        let deadline = Instant::now() + CORE_EXIT_TIMEOUT;
+        while child.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "Core outlived its job");
+            thread::sleep(CORE_EXIT_POLL_INTERVAL);
+        }
+    }
+
     #[test]
     fn terminate_confirms_the_exit_of_a_running_core() {
-        let mut managed = Some(ManagedCore {
-            session_id: "0123456789abcdef0123456789abcdef".to_string(),
-            child: spawn_running_core(),
-        });
+        let mut managed = Some(
+            ManagedCore::adopt(
+                "0123456789abcdef0123456789abcdef".to_string(),
+                spawn_running_core(),
+            )
+            .unwrap(),
+        );
 
         release_managed_core(&mut managed).unwrap();
 
@@ -848,7 +1324,7 @@ mod tests {
             .method("POST")
             .path("/start")
             .json(&StartParams {
-                address: r"\\.\pipe\FlClashCore_0123456789abcdef0123456789abcdef".to_string(),
+                address: ALLOWED_CORE_ADDRESS.to_string(),
                 session_id: "ABCDEF0123456789abcdef0123456789".to_string(),
             })
             .reply(&routes())
@@ -906,6 +1382,7 @@ mod tests {
         let response = warp::test::request()
             .method("POST")
             .path("/stop")
+            .body("")
             .reply(&routes())
             .await;
 
@@ -937,23 +1414,121 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn browser_origins_and_rebound_hosts_cannot_reach_any_endpoint() {
+        for (method, path) in [
+            ("GET", "/ping"),
+            ("GET", "/logs"),
+            ("POST", "/start"),
+            ("POST", "/stop"),
+        ] {
+            for (header, value) in [
+                ("origin", "https://attacker.test"),
+                ("origin", "null"),
+                ("host", "attacker.test:47890"),
+            ] {
+                let response = warp::test::request()
+                    .method(method)
+                    .path(path)
+                    .header(header, value)
+                    .reply(&routes())
+                    .await;
+                assert_eq!(response.status(), StatusCode::FORBIDDEN);
+                assert!(response
+                    .headers()
+                    .get("access-control-allow-origin")
+                    .is_none());
+            }
+        }
+        for host in ["127.0.0.1:47890", "localhost:47890", "FlClashHelperService"] {
+            let response = warp::test::request()
+                .path("/logs")
+                .header("host", host)
+                .reply(&routes())
+                .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+    }
+
+    #[tokio::test]
+    async fn state_changes_are_size_limited() {
+        let oversized = " ".repeat(MAX_REQUEST_BODY_BYTES as usize + 1);
+        for path in ["/start", "/stop"] {
+            let response = warp::test::request()
+                .method("POST")
+                .path(path)
+                .body(&oversized)
+                .reply(&routes())
+                .await;
+            assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+            assert_eq!(response.headers()["connection"], "close");
+
+            let response = warp::test::request()
+                .method("POST")
+                .path(path)
+                .reply(&routes())
+                .await;
+            assert_eq!(response.status(), StatusCode::LENGTH_REQUIRED);
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn only_accepts_random_core_pipe_namespace() {
-        assert!(is_allowed_core_pipe(
+        assert!(is_allowed_core_address(
             r"\\.\pipe\FlClashCore_0123456789abcdef0123456789abcdef"
         ));
-        assert!(!is_allowed_core_pipe(r"\\.\pipe\FlClashCore"));
-        assert!(!is_allowed_core_pipe(
+        assert!(!is_allowed_core_address(r"\\.\pipe\FlClashCore"));
+        assert!(!is_allowed_core_address(
             r"\\.\pipe\Other_0123456789abcdef0123456789abcdef"
         ));
-        assert!(!is_allowed_core_pipe(
+        assert!(!is_allowed_core_address(
             r"\\.\pipe\FlClashCore_0123456789abcdef"
         ));
-        assert!(!is_allowed_core_pipe(
+        assert!(!is_allowed_core_address(
             r"\\.\pipe\FlClashCore_0123456789abcdef0123456789abcdeg"
         ));
-        assert!(!is_allowed_core_pipe(
+        assert!(!is_allowed_core_address(
             r"\\.\pipe\FlClashCore_ABCDEF0123456789abcdef0123456789"
         ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_accepts_random_core_socket_namespace() {
+        assert!(is_allowed_core_address("/tmp/FlClashSocket_4821.sock"));
+        assert!(!is_allowed_core_address("/tmp/FlClashSocket_.sock"));
+        assert!(!is_allowed_core_address("/tmp/FlClashSocket_4821"));
+        assert!(!is_allowed_core_address("/tmp/Other_4821.sock"));
+        assert!(!is_allowed_core_address("/tmp/FlClashSocket_../x.sock"));
+        assert!(!is_allowed_core_address(
+            "/tmp/FlClashSocket_12345678901.sock"
+        ));
+    }
+
+    #[test]
+    fn a_poisoned_lock_still_hands_out_the_guarded_value() {
+        let mutex = Mutex::new(7);
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = mutex.lock().unwrap();
+            panic!("poison the lock");
+        });
+
+        assert!(mutex.lock().is_err());
+        assert_eq!(*lock_surviving_poison(&mutex), 7);
+    }
+
+    #[test]
+    fn logging_survives_a_panic_that_poisoned_the_log_buffer() {
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = LOGS.lock().unwrap();
+            panic!("poison the log buffer");
+        });
+
+        log_message("helper still logs after poisoning".to_string());
+
+        assert!(lock_surviving_poison(&LOGS)
+            .iter()
+            .any(|entry| entry == "helper still logs after poisoning"));
     }
 }

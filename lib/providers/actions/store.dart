@@ -2,22 +2,32 @@ part of '../action.dart';
 
 @Riverpod(keepAlive: true)
 class StoreAction extends _$StoreAction {
+  CoreController get _core => ref.read(coreHandlerProvider);
+
   @override
   void build() {}
 
   Future<void> shakingStore() async {
-    final profileIds = ref.read(
-      profilesProvider.select((state) => state.map((item) => item.id)),
-    );
-    final scriptIds = await ref.read(
-      scriptsProvider.future.select(
-        (state) async => (await state).map((item) => item.id),
-      ),
-    );
-    final pathsToDelete = await shakingProfileTask(VM2(profileIds, scriptIds));
-    await Future.wait(
-      pathsToDelete.map((path) => File(path).safeDelete(recursive: true)),
-    );
+    // The lists leave out rows they cannot read, whose files must survive, and
+    // the tables may not hold an optimistic write yet.
+    final profileIds = {
+      ...ref.read(profilesProvider).map((item) => item.id),
+      ...await database.profilesDao.ids().get(),
+    };
+    final scripts = await ref.read(scriptsProvider.future);
+    final scriptIds = {
+      ...scripts.map((item) => item.id),
+      ...await database.scriptsDao.ids().get(),
+    };
+    final providerFileNames = await database.clashProvidersDao
+        .fileNames()
+        .get();
+    final pathsToDelete = await shakingProfileTask((
+      profileIds: profileIds,
+      scriptIds: scriptIds,
+      providerFileNames: providerFileNames,
+    ));
+    await Future.wait(pathsToDelete.map(safeDeletePath));
   }
 
   void savePreferencesDebounce() {
@@ -27,6 +37,7 @@ class StoreAction extends _$StoreAction {
   }
 
   Future handleClear() async {
+    debouncer.cancel(FunctionTag.savePreferences);
     final profileIds = ref
         .read(profilesProvider)
         .map((item) => item.id)
@@ -42,17 +53,18 @@ class StoreAction extends _$StoreAction {
       }
     }
     final clearResults = await Future.wait(
-      profileIds.map(coreController.clearEffect),
+      profileIds.map((profileId) async {
+        try {
+          return await _core.clearEffect(profileId);
+        } catch (error) {
+          return 'clearEffect($profileId) failed: $error';
+        }
+      }),
     );
     for (final error in clearResults.where((error) => error.isNotEmpty)) {
       commonPrint.log(error, logLevel: LogLevel.warning);
     }
-    await preferences.clearPreferences();
-    commonPrint.log('clear preferences');
-    await database.close();
-    await File(await appPath.databasePath).safeDelete(recursive: true);
-    await Directory(await appPath.profilesPath).safeDelete(recursive: true);
-    await preferences.clearPreferences();
-    ref.read(systemActionProvider.notifier).handleExit(false);
+    await clearAppData();
+    unawaited(ref.read(systemActionProvider.notifier).handleExit(false));
   }
 }

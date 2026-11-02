@@ -1,12 +1,12 @@
 package com.follow.clash.service
 
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.ProxyInfo
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
-import android.util.Log
 import androidx.core.content.getSystemService
 import com.follow.clash.common.AccessControlMode
 import com.follow.clash.common.GlobalState
@@ -17,6 +17,8 @@ import com.follow.clash.service.models.VpnOptions
 import com.follow.clash.service.models.getIpv4RouteAddress
 import com.follow.clash.service.models.getIpv6RouteAddress
 import com.follow.clash.service.models.toCIDR
+import com.follow.clash.service.models.tunMtu
+import com.follow.clash.service.models.tunOptions
 import com.follow.clash.service.modules.ServiceModules
 import java.net.InetSocketAddress
 import java.util.concurrent.ConcurrentHashMap
@@ -41,26 +43,26 @@ class VpnService : SystemVpnService(), ManagedService {
     }
     private val uidPackageNameMap = ConcurrentHashMap<Int, String>()
 
-    private fun resolverProcess(
+    private fun resolveUid(
         protocol: Int,
         source: InetSocketAddress,
         target: InetSocketAddress,
-        uid: Int,
-    ): String {
-        val nextUid = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            connectivity?.getConnectionOwnerUid(protocol, source, target) ?: -1
-        } else {
-            uid
+    ): Int {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return -1
         }
-        if (nextUid == -1) {
-            return ""
-        }
-        return uidPackageNameMap.getOrPut(nextUid) {
-            packageManager
-                .getPackagesForUid(nextUid)
-                ?.firstOrNull()
-                .orEmpty()
-        }
+        return connectivity?.getConnectionOwnerUid(protocol, source, target) ?: -1
+    }
+
+    private fun resolvePackage(uid: Int): String {
+        val cached = uidPackageNameMap[uid]
+        if (cached != null) return cached
+        val packageName = packageManager
+            .getPackagesForUid(uid)
+            ?.firstOrNull()
+            ?.takeIf { it.isNotEmpty() }
+            .orEmpty()
+        return uidPackageNameMap.putIfAbsent(uid, packageName) ?: packageName
     }
 
     private val VpnOptions.tunAddress
@@ -91,6 +93,11 @@ class VpnService : SystemVpnService(), ManagedService {
         super.onLowMemory()
     }
 
+    override fun onTrimMemory(level: Int) {
+        trimCoreMemory(level)
+        super.onTrimMemory(level)
+    }
+
     inner class LocalBinder : Binder() {
         val service: VpnService
             get() = this@VpnService
@@ -119,7 +126,7 @@ class VpnService : SystemVpnService(), ManagedService {
         val fd = with(Builder()) {
             addAddressAndRoutes(options)
             addDnsServers(options)
-            setMtu(MTU)
+            setMtu(options.tunMtu)
             configureAccessControl(options)
             setSession(getString(CommonR.string.app_name))
             setBlocking(false)
@@ -145,15 +152,23 @@ class VpnService : SystemVpnService(), ManagedService {
         synchronized(tunLock) {
             tunRunning = true
             try {
-                Core.startTun(
-                    fd = fd,
-                    protect = this::protect,
-                    resolverProcess = this::resolverProcess,
-                    stack = options.stack,
-                    address = options.tunAddress,
-                    dns = options.tunDns,
-                    mtu = MTU,
-                )
+                // A Core that fails to take the descriptor leaves the system
+                // routes pointing at an interface nothing reads, and it no
+                // longer keeps its own sockets out of them: every connection
+                // then hangs until it times out. Tear the VPN down instead of
+                // reporting a start that only looks successful.
+                check(
+                    Core.startTun(
+                        fd = fd,
+                        protect = this::protect,
+                        resolveUid = this::resolveUid,
+                        resolvePackage = this::resolvePackage,
+                        stack = options.stack,
+                        address = options.tunAddress,
+                        dns = options.tunDns,
+                        options = options.tunOptions,
+                    ),
+                ) { "Core rejected the tun file descriptor" }
             } catch (error: Exception) {
                 stopTunLocked()
                 throw error
@@ -167,7 +182,7 @@ class VpnService : SystemVpnService(), ManagedService {
         addRoutes(
             routes = options::getIpv4RouteAddress,
             fallbackAddress = NET_ANY,
-            logTag = "addRoute4",
+            routeAll = options.routeAddress.isEmpty(),
         )
 
         if (options.ipv6) {
@@ -180,24 +195,25 @@ class VpnService : SystemVpnService(), ManagedService {
             addRoutes(
                 routes = options::getIpv6RouteAddress,
                 fallbackAddress = NET_ANY6,
-                logTag = "addRoute6",
+                routeAll = options.routeAddress.isEmpty(),
             )
         }
     }
 
+    // Flutter lists every family it routes, so a family missing from a
+    // non-empty list is one whose routes were all excluded.
     private fun Builder.addRoutes(
         routes: () -> List<CIDR>,
         fallbackAddress: String,
-        logTag: String,
+        routeAll: Boolean,
     ) {
-        val routeList = runCatching(routes).getOrDefault(emptyList())
-        if (routeList.isEmpty()) {
+        val routeList = runCatching(routes).getOrNull()
+        if (routeAll || routeList == null) {
             addRoute(fallbackAddress, 0)
             return
         }
         try {
             routeList.forEach { route ->
-                Log.d(logTag, "address: ${route.address} prefixLength: ${route.prefixLength}")
                 addRoute(route.address, route.prefixLength)
             }
         } catch (_: Exception) {
@@ -217,12 +233,25 @@ class VpnService : SystemVpnService(), ManagedService {
         if (!accessControl.enable) return
         when (accessControl.mode) {
             AccessControlMode.ACCEPT_SELECTED -> {
-                (accessControl.acceptList + packageName).forEach(::addAllowedApplication)
+                (accessControl.acceptList + packageName).forEach { name ->
+                    addApplication(name, ::addAllowedApplication)
+                }
             }
 
             AccessControlMode.REJECT_SELECTED -> {
-                (accessControl.rejectList - packageName).forEach(::addDisallowedApplication)
+                (accessControl.rejectList - packageName).forEach { name ->
+                    addApplication(name, ::addDisallowedApplication)
+                }
             }
+        }
+    }
+
+    // A selected package that was uninstalled since must not veto the whole tunnel.
+    private fun addApplication(name: String, add: (String) -> Builder) {
+        try {
+            add(name)
+        } catch (_: PackageManager.NameNotFoundException) {
+            GlobalState.log("Access control skipped an uninstalled package: $name")
         }
     }
 
@@ -264,13 +293,14 @@ class VpnService : SystemVpnService(), ManagedService {
     }
 
     companion object {
-        private const val IPV4_ADDRESS = "172.19.0.1/30"
+        // mihomo's own TUN default: 198.18.0.0/15 is benchmarking space no LAN
+        // uses, and its fake-ip pool starts at .4, past this /30.
+        private const val IPV4_ADDRESS = "198.18.0.1/30"
         private const val IPV6_ADDRESS = "fdfe:dcba:9876::1/126"
-        private const val DNS = "172.19.0.2"
+        private const val DNS = "198.18.0.2"
         private const val DNS6 = "fdfe:dcba:9876::2"
         private const val NET_ANY = "0.0.0.0"
         private const val NET_ANY6 = "::"
         private const val LOCAL_HOST = "127.0.0.1"
-        private const val MTU = 9000
     }
 }

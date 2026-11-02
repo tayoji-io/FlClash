@@ -1,15 +1,21 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:fl_clash/common/boot_record.dart';
 import 'package:fl_clash/common/common.dart';
+import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
+
+const _platformProbeTimeout = Duration(seconds: 2);
 
 class App {
   static App? _instance;
   late MethodChannel methodChannel;
   Function()? onExit;
+  Function()? onPackagesChanged;
+  final floatingKeyboard = ValueNotifier(false);
 
   App._internal() {
     methodChannel = const MethodChannel('$packageName/app');
@@ -19,6 +25,10 @@ class App {
           if (onExit != null) {
             await onExit!();
           }
+        case 'packagesChanged':
+          onPackagesChanged?.call();
+        case 'floatingImeChanged':
+          floatingKeyboard.value = call.arguments as bool;
         default:
           throw MissingPluginException();
       }
@@ -39,8 +49,31 @@ class App {
       'getPackages',
     );
     final List<dynamic> packagesRaw =
-        (await packagesString?.commonToJSON<List<dynamic>>()) ?? [];
+        (await packagesString?.decodeJson<List<dynamic>>()) ?? [];
     return packagesRaw.map((e) => Package.fromJson(e)).toSet().toList();
+  }
+
+  Future<bool> isInstalledAppsPermissionGranted() async {
+    return await methodChannel.invokeMethod<bool>(
+          'isInstalledAppsPermissionGranted',
+        ) ??
+        true;
+  }
+
+  Future<bool> requestInstalledAppsPermission() async {
+    return await methodChannel.invokeMethod<bool>(
+          'requestInstalledAppsPermission',
+        ) ??
+        false;
+  }
+
+  /// Android 17 drops traffic between the app and the local network until the
+  /// user grants this; earlier versions answer true.
+  Future<bool> requestLocalNetworkPermission() async {
+    return await methodChannel.invokeMethod<bool>(
+          'requestLocalNetworkPermission',
+        ) ??
+        false;
   }
 
   Future<List<String>> getChinaPackageNames() async {
@@ -48,34 +81,19 @@ class App {
       'getChinaPackageNames',
     );
     final List<dynamic> packageNamesRaw =
-        await packageNamesString?.commonToJSON<List<dynamic>>() ?? [];
+        await packageNamesString?.decodeJson<List<dynamic>>() ?? [];
     return packageNamesRaw.map((e) => e.toString()).toList();
-  }
-
-  Future<bool?> requestNotificationsPermission() async {
-    return methodChannel.invokeMethod<bool>('requestNotificationsPermission');
-  }
-
-  Future<bool> openFile(String path) async {
-    return await methodChannel.invokeMethod<bool>('openFile', {'path': path}) ??
-        false;
   }
 
   final Map<String, ImageProvider?> _packageIcons = {};
   final Map<String, Future<ImageProvider?>> _packageIconTasks = {};
-
-  bool hasPackageIcon(String packageName) {
-    return _packageIcons.containsKey(packageName);
-  }
+  final TaskPool _packageIconPool = TaskPool(maxConcurrentIconLoads);
 
   ImageProvider? getCachedPackageIcon(String packageName) {
     return _packageIcons[packageName];
   }
 
   Future<ImageProvider?> getPackageIcon(String packageName) {
-    if (packageName.isEmpty) {
-      return Future.value(null);
-    }
     if (_packageIcons.containsKey(packageName)) {
       return Future.value(_packageIcons[packageName]);
     }
@@ -83,18 +101,30 @@ class App {
   }
 
   Future<ImageProvider?> _loadPackageIcon(String packageName) async {
-    ImageProvider? icon;
-    try {
-      final path = await methodChannel.invokeMethod<String>('getPackageIcon', {
-        'packageName': packageName,
-      });
-      icon = path == null ? null : FileImage(File(path));
-    } catch (error) {
-      commonPrint.log('getPackageIcon error: $error');
+    var icon = await _requestPackageIcon(packageName);
+    if (icon == null && packageName.isNotEmpty) {
+      icon = await getPackageIcon('');
     }
     _packageIcons[packageName] = icon;
-    _packageIconTasks.remove(packageName);
+    unawaited(_packageIconTasks.remove(packageName));
     return icon;
+  }
+
+  Future<ImageProvider?> _requestPackageIcon(String packageName) async {
+    try {
+      final path = await _packageIconPool.run(
+        () => methodChannel.invokeMethod<String>('getPackageIcon', {
+          'packageName': packageName,
+        }),
+      );
+      if (path == null || path.isEmpty) {
+        return null;
+      }
+      return FileImage(File(path));
+    } catch (error) {
+      commonPrint.log('getPackageIcon error: $error');
+      return null;
+    }
   }
 
   @visibleForTesting
@@ -108,10 +138,11 @@ class App {
   }
 
   Future<bool?> initShortcuts() async {
-    return methodChannel.invokeMethod<bool>(
-      'initShortcuts',
-      currentAppLocalizations.toggle,
-    );
+    return methodChannel.invokeMethod<bool>('initShortcuts', {
+      'start': currentAppLocalizations.start,
+      'stop': currentAppLocalizations.stop,
+      'toggle': currentAppLocalizations.toggle,
+    });
   }
 
   Future<bool?> updateExcludeFromRecents(bool value) async {
@@ -120,29 +151,23 @@ class App {
     });
   }
 
-  Future<bool?> isBatteryOptimizationDisabled() async {
-    if (!Platform.isAndroid) return true;
-    return methodChannel.invokeMethod<bool>('isBatteryOptimizationDisabled');
-  }
-
-  Future<bool?> openBatteryOptimizationSettings() async {
-    if (!Platform.isAndroid) return false;
-    return methodChannel.invokeMethod<bool>('openBatteryOptimizationSettings');
-  }
-
   Future<bool?> openAppSettings() async {
     if (!Platform.isAndroid) return false;
     return methodChannel.invokeMethod<bool>('openAppSettings');
   }
 
-  Future<bool> didCrashOnPreviousExecution() async {
+  Future<AppExitInfo?> getLastExitInfo() async {
     try {
-      return await methodChannel.invokeMethod<bool>(
-            'didCrashOnPreviousExecution',
-          ) ??
-          false;
-    } catch (_) {
-      return false;
+      final raw = await methodChannel
+          .invokeMapMethod<String, Object?>('getLastExitInfo')
+          .timeout(_platformProbeTimeout);
+      return AppExitInfo.fromJson(raw);
+    } catch (error) {
+      commonPrint.log(
+        'Failed to read the last process exit info: ${compactError(error)}',
+        logLevel: LogLevel.warning,
+      );
+      return null;
     }
   }
 }

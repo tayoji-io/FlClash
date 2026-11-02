@@ -17,7 +17,7 @@ class Picker {
       initialDirectory: await appPath.downloadDirPath,
       bytes: bytes,
     );
-    if (!system.isAndroid && uri != null && uri.isScheme('file')) {
+    if (!system.isAndroid && uri != null && uri.scheme == 'file') {
       final file = File(uri.toFilePath());
       await file.safeWriteAsBytes(bytes);
     }
@@ -30,13 +30,13 @@ class Picker {
       await localFile.create(recursive: true);
     }
     final bytes = await localFile.readAsBytes();
-    final path = await FilePicker.saveFile(
+    final uri = await FilePicker.saveFile(
       fileName: fileName,
       initialDirectory: await appPath.downloadDirPath,
       bytes: bytes,
     );
     await localFile.safeDelete();
-    return path;
+    return uri;
   }
 
   Future<String?> pickerConfigQRCode() async {
@@ -44,16 +44,25 @@ class Picker {
     if (xFile == null) {
       return null;
     }
-    final controller = MobileScannerController();
-    final capture = await controller.analyzeImage(
+    // Not through a throwaway MobileScannerController: disposing one clears
+    // the platform scan window of a scanner page that is still open.
+    final capture = await MobileScannerPlatform.instance.analyzeImage(
       xFile.path,
-      formats: [BarcodeFormat.qrCode],
+      formats: const [BarcodeFormat.qrCode],
     );
-    final result = capture?.barcodes.first.rawValue;
-    if (result == null || !result.isUrl) {
-      throw currentAppLocalizations.pleaseUploadValidQrcode;
+    final url = profileUrlFromQrCodes(
+      capture?.barcodes.map((barcode) => barcode.rawValue) ?? const [],
+    );
+    if (url == null) {
+      throw MessageException(currentAppLocalizations.pleaseUploadValidQrcode);
     }
-    return result;
+    return url;
+  }
+}
+
+extension PlatformFileExt on PlatformFile {
+  Future<Uint8List> readBytes() {
+    return readAsBytes();
   }
 }
 

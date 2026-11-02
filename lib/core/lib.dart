@@ -4,13 +4,17 @@ import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/plugins/service.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import 'desktop/model.dart';
 import 'interface.dart';
 import 'method.dart';
+import 'spill.dart';
 
 class CoreLib extends CoreHandlerInterface {
   static CoreLib? _instance;
+
+  final Service? _service;
 
   Completer<bool> _connectedCompleter = Completer<bool>();
   Future<CoreLifecycleResult>? _closeOperation;
@@ -18,7 +22,15 @@ class CoreLib extends CoreHandlerInterface {
   int _methodCallId = 0;
   bool _closed = false;
 
-  CoreLib._internal();
+  CoreLib._internal() : _service = service;
+
+  @visibleForTesting
+  CoreLib.scoped(Service this._service);
+
+  @visibleForTesting
+  static void resetInstance() {
+    _instance = null;
+  }
 
   factory CoreLib() {
     _instance ??= CoreLib._internal();
@@ -37,19 +49,20 @@ class CoreLib extends CoreHandlerInterface {
         outcome: CoreLifecycleOutcome.coalesced,
       );
     }
-    final initializationError = await service?.init() ?? '';
+    final initializationError = await _service?.init() ?? '';
     if (initializationError.isNotEmpty) {
       throw StateError(initializationError);
     }
+    await globalState.container.read(vpnOptionsProvider.future);
     _connectedCompleter.complete(true);
     final syncError =
-        await service?.syncState(
+        await _service?.syncState(
           globalState.container.read(sharedStateProvider),
         ) ??
         '';
     if (syncError.isNotEmpty) {
       _connectedCompleter = Completer<bool>();
-      await service?.shutdown();
+      await _service?.shutdown();
       throw StateError(syncError);
     }
     return CoreLifecycleResult(
@@ -79,7 +92,7 @@ class CoreLib extends CoreHandlerInterface {
       );
     }
     _connectedCompleter = Completer<bool>();
-    final stopped = await service?.shutdown() ?? true;
+    final stopped = await _service?.shutdown() ?? true;
     if (!stopped) {
       throw StateError('Android Core service shutdown failed');
     }
@@ -99,18 +112,19 @@ class CoreLib extends CoreHandlerInterface {
     return _stop(allowClosed: true);
   }
 
+  // The service opens and closes the Core's listeners itself and reports a run
+  // that ends, so once it takes the command the Core's own answer is moot.
   @override
   Future<bool> startListener() async {
-    final listenerStarted = await super.startListener();
-    final serviceStarted = await service?.start() ?? false;
-    return listenerStarted && serviceStarted;
+    await super.startListener();
+    return await _service?.start() ?? false;
   }
 
   @override
   Future<bool> stopListener() async {
-    final serviceStopped = await service?.stop() ?? false;
-    final listenerStopped = await super.stopListener();
-    return serviceStopped && listenerStopped;
+    final serviceStopped = await _service?.stop() ?? false;
+    await super.stopListener();
+    return serviceStopped;
   }
 
   @override
@@ -118,9 +132,23 @@ class CoreLib extends CoreHandlerInterface {
     required CoreMethod method,
     Object? arguments,
     Duration? timeout,
+  }) {
+    final call = _invokeMethod<T>(method: method, arguments: arguments);
+    return call.withTimeout(
+      timeout: timeout,
+      onTimeout: () {
+        unawaited(call.then(discardSpilledFile, onError: (_) {}));
+        return null;
+      },
+    );
+  }
+
+  Future<T?> _invokeMethod<T>({
+    required CoreMethod method,
+    Object? arguments,
   }) async {
     try {
-      await _connectedCompleter.future.timeout(const Duration(seconds: 10));
+      await _connectedCompleter.future.timeout(coreConnectionWaitDuration);
     } catch (error) {
       commonPrint.log(
         'Invoke method ${method.name} before connection timed out: $error',
@@ -129,11 +157,9 @@ class CoreLib extends CoreHandlerInterface {
       return null;
     }
     final id = '${++_methodCallId}';
-    final response = await service
-        ?.invokeMethod(
-          CoreMethodCall(id: id, method: method, arguments: arguments),
-        )
-        .withTimeout(timeout: timeout, onTimeout: () => null);
+    final response = await _service?.invokeMethod(
+      CoreMethodCall(id: id, method: method, arguments: arguments),
+    );
     if (response == null) {
       return null;
     }
