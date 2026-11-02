@@ -75,7 +75,13 @@ Future<MemorySnapshot?> _readMemory(WidgetRef ref, MemoryReader? reader) async {
 Future<MemorySnapshot> _readSnapshot(WidgetRef ref) async {
   final rss = ProcessInfo.currentRss;
   final coreConnected = ref.read(coreStatusProvider) == CoreStatus.connected;
-  final core = coreConnected
+  final tunnelRunning = ref.read(runTimeProvider) != null;
+  // On iOS only the extension's Core is a second process; while the tunnel is
+  // stopped the answer comes from the app's own Core and is already in RSS.
+  final showCore = system.isIOS
+      ? coreConnected && tunnelRunning
+      : coreConnected;
+  final core = showCore
       ? await ref.read(coreHandlerProvider).getMemoryStats()
       : null;
   return MemorySnapshot.resolve(
