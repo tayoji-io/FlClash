@@ -91,6 +91,8 @@ class _AndroidContainerState extends ConsumerState<AndroidManager>
   @override
   void onServiceConnected() {
     ref.read(outboundIpProbeProvider.notifier).refresh(const [routedOutbound]);
+    unawaited(ref.read(setupActionProvider.notifier).syncRunningState());
+    unawaited(ref.read(proxiesActionProvider.notifier).updateGroups());
     super.onServiceConnected();
   }
 

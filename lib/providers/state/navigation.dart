@@ -10,11 +10,16 @@ NavigationItemsState navigationItemsState(Ref ref) {
     currentGroupsStateProvider.select((state) => state.value.isNotEmpty),
   );
   final isInit = ref.watch(initProvider);
+  final tunnelRunning = ref.watch(
+    runTimeProvider.select((state) => state != null),
+  );
   return NavigationItemsState(
     value:
         navigationPort?.getItems(
           openLogs: openLogs,
-          hasProxies: !isInit ? hasProfiles : hasProxies,
+          hasProxies: !isInit
+              ? hasProfiles
+              : hasProxies || (system.isIOS && tunnelRunning),
         ) ??
         const [],
   );

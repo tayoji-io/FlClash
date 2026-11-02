@@ -767,6 +767,11 @@ class SetupAction extends _$SetupAction {
       _appliedInputs = inputs;
       globalState.lastConfigCounts = realProfile.counts;
       await preloadInvoke?.call();
+      // The app Core starts empty on iOS while the tunnel keeps the profile,
+      // so the views still need the groups from the running instance.
+      if (system.isIOS) {
+        await onUpdated?.call();
+      }
       return _SetupTaskResult.completed;
     }
     // Go answers a config it rejects by running its built-in default, which
