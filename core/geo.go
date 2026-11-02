@@ -55,7 +55,9 @@ func handleUpdateGeoData(geoType string) error {
 		defer releaseGeoUpdate(geoType)
 		if err := resource.update(); err != nil {
 			logError("updateGeoData(%s) error: %v", geoType, err)
+			return
 		}
+		scheduleLoadMemoryRelease()
 	})
 	return nil
 }

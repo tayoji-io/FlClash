@@ -33,7 +33,6 @@ public class ServicePlugin: NSObject, FlutterPlugin {
         "changeProxy",
         "updateConfig",
         "setupConfig",
-        "updateGeoData",
         "sideLoadExternalProvider",
         "updateExternalProvider",
         "clearEffect",
